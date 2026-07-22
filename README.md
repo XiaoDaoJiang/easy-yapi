@@ -27,6 +27,7 @@ Export API endpoints from your source code to multiple formats:
 | cURL | ✓ | ✓ | Executable shell command |
 | HTTP Client | ✓ | ✓ | IntelliJ HTTP Client scratch file |
 | **Hoppscotch** *(Beta)* | ✓ | — | JSON file or direct upload to Hoppscotch |
+| **OpenAPI** *(Beta)* | ✓ | ✓ | `.json` or `.yaml` OpenAPI 3.0.3 document |
 
 ### API Dashboard
 
@@ -124,7 +125,7 @@ Support for gRPC service implementations:
 
 1. Right-click on a controller file, class, or method in the editor or project view
 2. Select **EasyApi → Export** (or press `Ctrl+E` on macOS / `Alt+Shift+E`)
-3. Choose the target format (YApi / Postman / Hoppscotch *(Beta)* / Markdown / cURL / HTTP Client)
+3. Choose the target format (YApi / Postman / Hoppscotch *(Beta)* / Markdown / cURL / HTTP Client / OpenAPI *(Beta)*)
 4. The APIs will be exported automatically
 
 ### Call an API
@@ -240,7 +241,7 @@ graph TB
 
 - **ExportOrchestrator** — Coordinates the full export pipeline: scans endpoints via `ApiScanner`, then hands them to the selected `Channel` for output
 - **ClassExporter** *(extension point)* — Extracts `ApiEndpoint` models from PSI classes; built-in implementations: Spring MVC, Spring Cloud OpenFeign, JAX-RS, Spring Actuator, gRPC
-- **Channel** *(extension point)* — Converts `ApiEndpoint` models to an output format and handles file write / remote upload; built-in channels: YApi, Postman, Markdown, cURL, HTTP Client, Hoppscotch *(Beta)*. Adding a new output target only requires implementing `Channel` — no core edits
+- **Channel** *(extension point)* — Converts `ApiEndpoint` models to an output format and handles file write / remote upload; built-in channels: YApi, Postman, Markdown, cURL, HTTP Client, Hoppscotch *(Beta)*, OpenAPI *(Beta)*. Adding a new output target only requires implementing `Channel` — no core edits
 - **ApiIndex** — Caches discovered endpoints for fast search and dashboard access
 - **RuleEngine** — Evaluates rule expressions (Groovy, regex, annotation, tag) to customize parsing behavior
 - **AI Assistant** — Optional built-in agent that inspects the project via PSI tools and authors rule files; see the [Skills](#skills) section for the external-skill equivalent
@@ -251,12 +252,13 @@ The plugin's source tree is organized into four top-level buckets under `src/mai
 
 ```
 com.itangcent.easyapi/
-├── channel/      # OUTPUT — export destinations (YApi, Postman, Markdown, cURL, Hoppscotch, HTTP Client)
+├── channel/      # OUTPUT — export destinations (YApi, Postman, Markdown, cURL, Hoppscotch, HTTP Client, OpenAPI)
 │   ├── spi/      #   Channel EP contract: Channel, ChannelConfig, ChannelRegistry, …
 │   ├── curl/
 │   ├── hoppscotch/  (+ model/)
 │   ├── httpclient/
 │   ├── markdown/    (+ template/)
+│   ├── openapi/
 │   ├── postman/     (+ model/)
 │   └── yapi/        (+ markdown/)  # easy-yapi only
 │
