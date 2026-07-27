@@ -24,9 +24,9 @@ import java.io.File
  * silent-failure trap.
  *
  * The canonical source is `src/main/resources/docs/knowledge-base/rule-guide.md`.
- * The external skill's mirror (`skills/easy-api-assistant/docs/rule-guide.md`)
+ * The external skill's mirror (`skills/easy-yapi-assistant/docs/rule-guide.md`)
  * is kept in sync by the `syncKnowledgeBase` Gradle task (verified by
- * `EasyApiAssistantSkillTest`).
+ * `EasyYapiAssistantSkillTest`).
  *
  * Run with: `./gradlew test --tests "*.RuleGuideWorkflowCatalogTest*"`
  */
