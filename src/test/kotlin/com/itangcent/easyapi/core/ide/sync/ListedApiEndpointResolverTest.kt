@@ -83,6 +83,27 @@ class ListedApiEndpointResolverTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertEquals("Background resolution should find the endpoint", 1, result.endpoints.size)
     }
 
+    fun testResolvesWholeControllerToAllEndpoints() = runTest {
+        val result = resolver.resolve(
+            listOf(ControllerSelector("com.itangcent.api.UserCtrl", 1))
+        )
+
+        assertTrue("Whole Controller should produce multiple endpoints", result.endpoints.size > 1)
+        assertTrue("Whole Controller selector should not produce errors", result.errors.isEmpty())
+    }
+
+    fun testWholeControllerSelectorOverridesMethodsInSameGroup() = runTest {
+        val result = resolver.resolve(
+            listOf(
+                ControllerMethodSelector("com.itangcent.api.UserCtrl", "missing", null, 1),
+                ControllerSelector("com.itangcent.api.UserCtrl", 2)
+            )
+        )
+
+        assertTrue("Whole Controller should produce multiple endpoints", result.endpoints.size > 1)
+        assertTrue("Wildcard should suppress method lookup errors", result.errors.isEmpty())
+    }
+
     fun testResolvesSignatureQualifiedMethod() = runTest {
         val result = resolver.resolve(
             listOf(
