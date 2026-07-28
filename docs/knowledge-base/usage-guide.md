@@ -73,14 +73,16 @@ EasyYapi can export API endpoints to YApi, Postman, Markdown, cURL, or IntelliJ 
 Create the UTF-8 file `<project>/.easyapi/sync-apis.txt` and list one Controller API method per line:
 
 ```text
-# Simple form when the method is not overloaded
+# Equivalent simple forms when the method is not overloaded
 com.gyenno.pdms.modules.selfassessment.controller.SelfAssessmentController#taskQrCode
+com.gyenno.scoring.project.api.PatientApi.queryPatientList
 
-# Signature form for overloaded methods
+# Equivalent signature forms for overloaded methods
 com.acme.user.UserController#createUser(com.acme.user.CreateUserRequest)
+com.acme.user.UserController.createUser(com.acme.user.CreateUserRequest)
 ```
 
-The simple form is `<fully qualified Controller>#<method>`. If the method is overloaded, use `<fully qualified Controller>#<method>(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Blank lines and lines whose first non-space character is `#` are ignored.
+Use either `<fully qualified Controller>#<method>` or `<fully qualified Controller>.<method>`. If the method is overloaded, append `(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Blank lines and lines whose first non-space character is `#` are ignored.
 
 Invoke **EasyYapi → Sync Listed APIs...** or press **Alt+Shift+Y**. EasyYapi reads the file without modifying it, resolves the methods to current endpoints, and opens the normal export dialog so you can review endpoints and choose any enabled export channel.
 
