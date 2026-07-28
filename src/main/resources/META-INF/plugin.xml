@@ -213,5 +213,15 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
 
+        <action id="com.itangcent.idea.easy_api.actions.SyncListedApisAction"
+                class="com.itangcent.easyapi.core.ide.action.SyncListedApisAction"
+                text="Sync Listed APIs..."
+                description="Export Controller APIs listed in .easyapi/sync-apis.txt">
+            <keyboard-shortcut first-keystroke="alt shift Y" keymap="$default"/>
+            <add-to-group group-id="EasyApiGenerateMenu" anchor="last"/>
+            <add-to-group group-id="EasyApiEditorLangPopupMenu" anchor="last"/>
+            <add-to-group group-id="EasyApiProjectViewPopupMenu" anchor="last"/>
+        </action>
+
     </actions>
 </idea-plugin>

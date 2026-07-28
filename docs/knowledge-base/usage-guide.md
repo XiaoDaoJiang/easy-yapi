@@ -10,11 +10,12 @@ This guide walks through the most common EasyYapi workflows — installation, fi
 
 1. [Install](#install)
 2. [First Export](#first-export)
-3. [API Dashboard](#api-dashboard)
-4. [Search](#search)
-5. [Field Conversion](#field-conversion)
-6. [Pre/Post Scripts](#prepost-scripts)
-7. [AI-assisted Rule Creation](#ai-assisted-rule-creation)
+3. [Sync Listed APIs](#sync-listed-apis)
+4. [API Dashboard](#api-dashboard)
+5. [Search](#search)
+6. [Field Conversion](#field-conversion)
+7. [Pre/Post Scripts](#prepost-scripts)
+8. [AI-assisted Rule Creation](#ai-assisted-rule-creation)
 
 ---
 
@@ -64,6 +65,24 @@ EasyYapi can export API endpoints to YApi, Postman, Markdown, cURL, or IntelliJ 
 
 1. Right-click an endpoint method and select **EasyYapi → Export to cURL**.
 2. The cURL command is copied to the clipboard (or saved to a file).
+
+---
+
+## Sync Listed APIs
+
+Create the UTF-8 file `<project>/.easyapi/sync-apis.txt` and list one Controller API method per line:
+
+```text
+# Simple form when the method is not overloaded
+com.gyenno.pdms.modules.selfassessment.controller.SelfAssessmentController#taskQrCode
+
+# Signature form for overloaded methods
+com.acme.user.UserController#createUser(com.acme.user.CreateUserRequest)
+```
+
+The simple form is `<fully qualified Controller>#<method>`. If the method is overloaded, use `<fully qualified Controller>#<method>(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Blank lines and lines whose first non-space character is `#` are ignored.
+
+Invoke **EasyYapi → Sync Listed APIs...** or press **Alt+Shift+Y**. EasyYapi reads the file without modifying it, resolves the methods to current endpoints, and opens the normal export dialog so you can review endpoints and choose any enabled export channel.
 
 ---
 
