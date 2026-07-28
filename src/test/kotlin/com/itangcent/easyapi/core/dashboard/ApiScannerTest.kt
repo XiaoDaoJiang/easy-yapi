@@ -1,12 +1,19 @@
 package com.itangcent.easyapi.core.dashboard
 
+import com.intellij.psi.PsiClass
 import com.itangcent.easyapi.core.cache.api.ApiIndex
+import com.itangcent.easyapi.core.export.ApiEndpoint
+import com.itangcent.easyapi.core.export.ClassExporter
 import com.itangcent.easyapi.core.export.HttpMetadata
+import com.itangcent.easyapi.core.export.HttpMethod
+import com.itangcent.easyapi.core.export.httpMetadata
 import com.itangcent.easyapi.core.ide.support.SelectionScope
-import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
-import com.itangcent.easyapi.testFramework.TestConfigReader
+import com.itangcent.easyapi.core.internal.PluginInfo.PLUGIN_ID
+import com.itangcent.easyapi.core.internal.threading.read
 import com.itangcent.easyapi.core.settings.module.GeneralSettings
 import com.itangcent.easyapi.core.settings.update
+import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
+import com.itangcent.easyapi.testFramework.TestConfigReader
 
 class ApiScannerTest : EasyApiLightCodeInsightFixtureTestCase() {
 
@@ -198,5 +205,49 @@ class ApiScannerTest : EasyApiLightCodeInsightFixtureTestCase() {
             classEndpoints.size,
             selectionEndpoints.size
         )
+    }
+
+    fun testScanClassesBackfillsMissingSourceClassForEveryScanMode() = runTest {
+        project.extensionArea
+            .getExtensionPoint<ClassExporter>("$PLUGIN_ID.classExporter")
+            .registerExtension(SourceClassOmittingExporter(), testRootDisposable)
+        val psiClass = findClass("com.itangcent.api.UserCtrl")!!
+
+        listOf(false, true).forEach { concurrent ->
+            settingBinder.update(GeneralSettings::class) {
+                concurrentScanEnabled = concurrent
+            }
+
+            val endpoint = apiScanner.scanClasses(listOf(psiClass))
+                .single { it.name == SourceClassOmittingExporter.ENDPOINT_NAME }
+
+            assertEquals(
+                "Scanner should backfill sourceClass when concurrentScanEnabled=$concurrent",
+                psiClass,
+                endpoint.sourceClass
+            )
+        }
+    }
+
+    private class SourceClassOmittingExporter : ClassExporter {
+
+        override val frameworkName: String = "SpringMVC"
+
+        override suspend fun export(psiClass: PsiClass): List<ApiEndpoint> {
+            val sourceMethod = read {
+                psiClass.findMethodsByName("greeting", false).single()
+            }
+            return listOf(
+                ApiEndpoint(
+                    name = ENDPOINT_NAME,
+                    sourceMethod = sourceMethod,
+                    metadata = httpMetadata("/source-class-omitted", HttpMethod.GET)
+                )
+            )
+        }
+
+        companion object {
+            const val ENDPOINT_NAME = "source-class-omitted"
+        }
     }
 }
