@@ -35,7 +35,9 @@ internal class ListedApiEndpointResolver(private val project: Project) {
         }
 
         indicator?.text = "Scanning listed API classes..."
-        val classes = resolvedMethods.mapNotNull { it.method.containingClass }.distinct()
+        val classes = read {
+            resolvedMethods.mapNotNull { it.method.containingClass }.distinct()
+        }
         val scanned = ApiScanner.getInstance(project).scanClasses(classes, indicator).toList()
         val endpoints = mutableListOf<ApiEndpoint>()
         val matchedMethods = mutableSetOf<PsiMethod>()

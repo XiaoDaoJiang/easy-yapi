@@ -1,5 +1,7 @@
 package com.itangcent.easyapi.core.ide.sync
 
+import com.intellij.openapi.application.ApplicationManager
+import com.itangcent.easyapi.core.internal.threading.background
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
 import com.itangcent.easyapi.testFramework.TestConfigReader
 
@@ -65,6 +67,20 @@ class ListedApiEndpointResolverTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertEquals("Should resolve exactly one endpoint", 1, result.endpoints.size)
         assertEquals("Endpoint should belong to the listed method", "get", result.endpoints.single().sourceMethod?.name)
         assertTrue("Resolved selector should not produce errors", result.errors.isEmpty())
+    }
+
+    fun testResolvesOnBackgroundThreadWithoutReadAccessViolation() = runTest {
+        val result = background {
+            assertFalse(
+                "Test must exercise resolver outside a read action",
+                ApplicationManager.getApplication().isReadAccessAllowed
+            )
+            resolver.resolve(
+                listOf(ControllerMethodSelector("com.itangcent.api.UserCtrl", "get", null, 1))
+            )
+        }
+
+        assertEquals("Background resolution should find the endpoint", 1, result.endpoints.size)
     }
 
     fun testResolvesSignatureQualifiedMethod() = runTest {
