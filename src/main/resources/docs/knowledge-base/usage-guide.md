@@ -80,9 +80,13 @@ com.gyenno.scoring.project.api.PatientApi.queryPatientList
 # Equivalent signature forms for overloaded methods
 com.acme.user.UserController#createUser(com.acme.user.CreateUserRequest)
 com.acme.user.UserController.createUser(com.acme.user.CreateUserRequest)
+
+# Equivalent whole Controller forms
+com.acme.user.UserController#*
+com.acme.user.UserController.*
 ```
 
-Use either `<fully qualified Controller>#<method>` or `<fully qualified Controller>.<method>`. If the method is overloaded, append `(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Blank lines and lines whose first non-space character is `#` are ignored.
+Use either `<fully qualified Controller>#<method>` or `<fully qualified Controller>.<method>`. If the method is overloaded, append `(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Use `#*` or `.*` to select every endpoint in a Controller. A whole Controller selector wins over method selectors for the same class. Blank lines and lines whose first non-space character is `#` are ignored.
 
 Invoke **EasyYapi → Sync Listed APIs...** or press **Alt+Shift+Y**. EasyYapi reads the file without modifying it, resolves the methods to current endpoints, and opens the normal export dialog so you can review endpoints and choose any enabled export channel.
 
