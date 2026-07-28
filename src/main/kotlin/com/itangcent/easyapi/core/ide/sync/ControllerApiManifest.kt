@@ -41,8 +41,15 @@ internal object ControllerApiManifest {
     }
 
     private fun parseLine(line: String, lineNumber: Int): Result<ControllerMethodSelector> = runCatching {
-        val separator = line.indexOf('#')
-        require(separator > 0 && separator == line.lastIndexOf('#')) { FORMAT_ERROR }
+        val hashSeparator = line.indexOf('#')
+        val separator = if (hashSeparator >= 0) {
+            require(hashSeparator > 0 && hashSeparator == line.lastIndexOf('#')) { FORMAT_ERROR }
+            hashSeparator
+        } else {
+            val parametersStart = line.indexOf('(').takeIf { it >= 0 } ?: line.length
+            line.lastIndexOf('.', parametersStart - 1)
+        }
+        require(separator > 0) { FORMAT_ERROR }
 
         val className = line.substring(0, separator).trim()
         val methodSpec = line.substring(separator + 1).trim()
@@ -73,5 +80,6 @@ internal object ControllerApiManifest {
     }
 
     private const val FORMAT_ERROR =
-        "Expected <fully.qualified.Controller>#<method> or <fully.qualified.Controller>#<method>(<parameter.types>)"
+        "Expected <fully.qualified.Controller>[#.]<method> or " +
+            "<fully.qualified.Controller>[#.]<method>(<parameter.types>)"
 }

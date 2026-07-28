@@ -33,8 +33,38 @@ class ControllerApiManifestTest {
     }
 
     @Test
+    fun `parses Java style dot selectors`() {
+        val result = ControllerApiManifest.parse(
+            """
+            com.gyenno.scoring.project.api.PatientApi.queryPatientList
+            com.gyenno.scoring.project.api.PatientApi.queryPatient(java.lang.String)
+            """.trimIndent()
+        )
+
+        assertEquals(
+            "Should parse simple and signature-qualified dot selectors",
+            listOf(
+                ControllerMethodSelector(
+                    "com.gyenno.scoring.project.api.PatientApi",
+                    "queryPatientList",
+                    null,
+                    1
+                ),
+                ControllerMethodSelector(
+                    "com.gyenno.scoring.project.api.PatientApi",
+                    "queryPatient",
+                    listOf("java.lang.String"),
+                    2
+                )
+            ),
+            result.selectors
+        )
+        assertTrue("Valid dot selectors should not contain errors", result.errors.isEmpty())
+    }
+
+    @Test
     fun `reports the original line number for malformed selector`() {
-        val result = ControllerApiManifest.parse("\ncom.acme.UserController\n")
+        val result = ControllerApiManifest.parse("\ncom.acme.UserController#\n")
 
         assertEquals("Malformed selector should retain its source line", 2, result.errors.single().lineNumber)
     }
