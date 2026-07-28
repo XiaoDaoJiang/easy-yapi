@@ -63,6 +63,26 @@ class ControllerApiManifestTest {
     }
 
     @Test
+    fun `parses whole Controller selectors`() {
+        val result = ControllerApiManifest.parse(
+            """
+            com.acme.UserController#*
+            com.acme.AdminController.*
+            """.trimIndent()
+        )
+
+        assertEquals(
+            "Both separators should support whole Controller selection",
+            listOf(
+                ControllerSelector("com.acme.UserController", 1),
+                ControllerSelector("com.acme.AdminController", 2)
+            ),
+            result.selectors
+        )
+        assertTrue("Whole Controller selectors should not contain errors", result.errors.isEmpty())
+    }
+
+    @Test
     fun `reports the original line number for malformed selector`() {
         val result = ControllerApiManifest.parse("\ncom.acme.UserController#\n")
 

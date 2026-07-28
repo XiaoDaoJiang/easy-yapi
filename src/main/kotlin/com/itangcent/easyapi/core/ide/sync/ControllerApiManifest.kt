@@ -1,11 +1,21 @@
 package com.itangcent.easyapi.core.ide.sync
 
+internal sealed interface ControllerApiSelector {
+    val className: String
+    val lineNumber: Int
+}
+
+internal data class ControllerSelector(
+    override val className: String,
+    override val lineNumber: Int
+) : ControllerApiSelector
+
 internal data class ControllerMethodSelector(
-    val className: String,
+    override val className: String,
     val methodName: String,
     val parameterTypeNames: List<String>?,
-    val lineNumber: Int
-)
+    override val lineNumber: Int
+) : ControllerApiSelector
 
 internal data class ManifestParseError(
     val lineNumber: Int,
@@ -13,7 +23,7 @@ internal data class ManifestParseError(
 )
 
 internal data class ManifestParseResult(
-    val selectors: List<ControllerMethodSelector>,
+    val selectors: List<ControllerApiSelector>,
     val errors: List<ManifestParseError>
 )
 
@@ -24,7 +34,7 @@ internal object ControllerApiManifest {
     private val parameterType = Regex("[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*(?:\\[\\])*(?:\\.\\.\\.)?")
 
     fun parse(content: String): ManifestParseResult {
-        val selectors = mutableListOf<ControllerMethodSelector>()
+        val selectors = mutableListOf<ControllerApiSelector>()
         val errors = mutableListOf<ManifestParseError>()
 
         content.lineSequence().forEachIndexed { index, sourceLine ->
@@ -40,7 +50,7 @@ internal object ControllerApiManifest {
         return ManifestParseResult(selectors, errors)
     }
 
-    private fun parseLine(line: String, lineNumber: Int): Result<ControllerMethodSelector> = runCatching {
+    private fun parseLine(line: String, lineNumber: Int): Result<ControllerApiSelector> = runCatching {
         val hashSeparator = line.indexOf('#')
         val separator = if (hashSeparator >= 0) {
             require(hashSeparator > 0 && hashSeparator == line.lastIndexOf('#')) { FORMAT_ERROR }
@@ -55,6 +65,10 @@ internal object ControllerApiManifest {
         val methodSpec = line.substring(separator + 1).trim()
         require(qualifiedName.matches(className)) { "Invalid Controller class name: '$className'" }
         require(methodSpec.isNotEmpty()) { FORMAT_ERROR }
+
+        if (methodSpec == "*") {
+            return@runCatching ControllerSelector(className, lineNumber)
+        }
 
         val openParenthesis = methodSpec.indexOf('(')
         if (openParenthesis < 0) {
@@ -80,6 +94,6 @@ internal object ControllerApiManifest {
     }
 
     private const val FORMAT_ERROR =
-        "Expected <fully.qualified.Controller>[#.]<method> or " +
+        "Expected <fully.qualified.Controller>[#.][<method>|*] or " +
             "<fully.qualified.Controller>[#.]<method>(<parameter.types>)"
 }

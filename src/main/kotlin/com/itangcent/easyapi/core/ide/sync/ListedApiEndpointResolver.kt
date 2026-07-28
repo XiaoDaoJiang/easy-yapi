@@ -3,6 +3,7 @@ package com.itangcent.easyapi.core.ide.sync
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.psi.JavaPsiFacade
+import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.search.GlobalSearchScope
 import com.itangcent.easyapi.core.dashboard.ApiScanner
@@ -24,27 +25,32 @@ internal class ListedApiEndpointResolver(private val project: Project) {
     private val console = project.console
 
     suspend fun resolve(
-        selectors: List<ControllerMethodSelector>,
+        selectors: List<ControllerApiSelector>,
         indicator: ProgressIndicator? = null
     ): ListedApiResolution {
         val errors = mutableListOf<ListedApiResolutionError>()
-        val resolvedMethods = resolveMethods(selectors, errors)
-        if (resolvedMethods.isEmpty()) {
-            console.info("Listed API resolution: resolved=0, skipped=${errors.size}")
+        val resolvedControllers = resolveControllers(selectors, errors)
+        if (resolvedControllers.isEmpty()) {
+            console.info("Listed API resolution: controllers=0, skipped=${errors.size}")
             return ListedApiResolution(emptyList(), errors)
         }
 
         indicator?.text = "Scanning listed API classes..."
-        val classes = read {
-            resolvedMethods.mapNotNull { it.method.containingClass }.distinct()
-        }
+        val classes = resolvedControllers.map { it.psiClass }
         val scanned = ApiScanner.getInstance(project).scanClasses(classes, indicator).toList()
+        val controllersByClass = resolvedControllers.associateBy { it.psiClass }
         val endpoints = mutableListOf<ApiEndpoint>()
         val matchedMethods = mutableSetOf<PsiMethod>()
 
         for (endpoint in scanned) {
+            val controller = endpoint.sourceClass?.let(controllersByClass::get) ?: continue
+            if (controller.allMethods) {
+                endpoints += endpoint
+                continue
+            }
+
             val sourceMethod = endpoint.sourceMethod ?: continue
-            for (resolved in resolvedMethods) {
+            for (resolved in controller.methods) {
                 if (areMethodsRelated(sourceMethod, resolved.method)) {
                     endpoints += endpoint
                     matchedMethods += resolved.method
@@ -53,7 +59,9 @@ internal class ListedApiEndpointResolver(private val project: Project) {
             }
         }
 
-        resolvedMethods
+        resolvedControllers
+            .asSequence()
+            .flatMap { it.methods.asSequence() }
             .filterNot { it.method in matchedMethods }
             .forEach { resolved ->
                 errors += error(
@@ -63,61 +71,88 @@ internal class ListedApiEndpointResolver(private val project: Project) {
             }
 
         console.info(
-            "Listed API resolution: resolved=${resolvedMethods.size}, " +
+            "Listed API resolution: controllers=${resolvedControllers.size}, " +
                 "skipped=${errors.size}, endpoints=${endpoints.size}"
         )
         return ListedApiResolution(endpoints, errors)
     }
 
-    /** @requires ReadAction context */
-    private suspend fun resolveMethods(
-        selectors: List<ControllerMethodSelector>,
+    private suspend fun resolveControllers(
+        selectors: List<ControllerApiSelector>,
         errors: MutableList<ListedApiResolutionError>
-    ): List<ResolvedSelector> = read {
+    ): List<ResolvedController> {
         val javaPsiFacade = JavaPsiFacade.getInstance(project)
         val scope = GlobalSearchScope.projectScope(project)
         val recognizer = CompositeApiClassRecognizer.getInstance(project)
+        val resolvedControllers = mutableListOf<ResolvedController>()
 
-        selectors.mapNotNull { selector ->
-            val psiClass = javaPsiFacade.findClass(selector.className, scope)
-            if (psiClass == null) {
-                errors += error(selector, "class '${selector.className}' was not found")
-                return@mapNotNull null
-            }
-            if (!recognizer.isApiClass(psiClass)) {
-                errors += error(selector, "class '${selector.className}' is not an API controller")
-                return@mapNotNull null
-            }
-
-            val namedMethods = psiClass.findMethodsByName(selector.methodName, false).toList()
-            if (namedMethods.isEmpty()) {
-                errors += error(selector, "method '${selector.methodName}' was not found")
-                return@mapNotNull null
-            }
-
-            val method = if (selector.parameterTypeNames == null) {
-                if (namedMethods.size != 1) {
-                    errors += error(selector, "method '${selector.methodName}' is overloaded; specify parameter types")
-                    return@mapNotNull null
+        for (group in selectors.groupBy { it.className }.values) {
+            val resolved = read {
+                val className = group.first().className
+                val psiClass = javaPsiFacade.findClass(className, scope)
+                if (psiClass == null) {
+                    group.forEach { errors += error(it, "class '$className' was not found") }
+                    return@read null
                 }
-                namedMethods.single()
-            } else {
-                namedMethods.singleOrNull { method ->
-                    method.parameterList.parameters.map { it.type.canonicalText } == selector.parameterTypeNames
-                } ?: run {
-                    errors += error(selector, "method '${selector.methodName}' has no matching parameter signature")
-                    return@mapNotNull null
+                if (!recognizer.isApiClass(psiClass)) {
+                    group.forEach { errors += error(it, "class '$className' is not an API controller") }
+                    return@read null
                 }
-            }
+                if (group.any { it is ControllerSelector }) {
+                    return@read ResolvedController(psiClass, allMethods = true, emptyList())
+                }
 
-            ResolvedSelector(selector, method)
+                val methods = group
+                    .filterIsInstance<ControllerMethodSelector>()
+                    .mapNotNull { resolveMethod(psiClass, it, errors) }
+                if (methods.isEmpty()) null else ResolvedController(psiClass, allMethods = false, methods)
+            }
+            if (resolved != null) resolvedControllers += resolved
         }
+
+        return resolvedControllers
     }
 
-    private fun error(selector: ControllerMethodSelector, message: String) =
+    /** @requires ReadAction context */
+    private fun resolveMethod(
+        psiClass: PsiClass,
+        selector: ControllerMethodSelector,
+        errors: MutableList<ListedApiResolutionError>
+    ): ResolvedMethod? {
+        val namedMethods = psiClass.findMethodsByName(selector.methodName, false).toList()
+        if (namedMethods.isEmpty()) {
+            errors += error(selector, "method '${selector.methodName}' was not found")
+            return null
+        }
+
+        val method = if (selector.parameterTypeNames == null) {
+            if (namedMethods.size != 1) {
+                errors += error(selector, "method '${selector.methodName}' is overloaded; specify parameter types")
+                return null
+            }
+            namedMethods.single()
+        } else {
+            namedMethods.singleOrNull { method ->
+                method.parameterList.parameters.map { it.type.canonicalText } == selector.parameterTypeNames
+            } ?: run {
+                errors += error(selector, "method '${selector.methodName}' has no matching parameter signature")
+                return null
+            }
+        }
+
+        return ResolvedMethod(selector, method)
+    }
+
+    private fun error(selector: ControllerApiSelector, message: String) =
         ListedApiResolutionError("line ${selector.lineNumber}: $message")
 
-    private data class ResolvedSelector(
+    private data class ResolvedController(
+        val psiClass: PsiClass,
+        val allMethods: Boolean,
+        val methods: List<ResolvedMethod>
+    )
+
+    private data class ResolvedMethod(
         val selector: ControllerMethodSelector,
         val method: PsiMethod
     )
