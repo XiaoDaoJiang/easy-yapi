@@ -406,7 +406,7 @@ class ApiScanner(private val project: Project) {
                     }
                     if (exported.isNotEmpty()) {
                         LOG.info("Exporter ${exporter::class.simpleName} found ${exported.size} endpoints in $className")
-                        endpoints.addAll(exported)
+                        endpoints.addAll(exported.withSourceClass(psiClass))
                     }
                 } catch (e: TimeoutCancellationException) {
                     console.warn("Export timed out for class: $className (>${PER_CLASS_TIMEOUT_MS})")
@@ -468,7 +468,7 @@ class ApiScanner(private val project: Project) {
                             }
                             if (exported.isNotEmpty()) {
                                 LOG.info("Exporter ${exporter::class.simpleName} found ${exported.size} endpoints in $className")
-                                endpoints.addAll(exported)
+                                endpoints.addAll(exported.withSourceClass(psiClass))
                             }
                         } catch (e: TimeoutCancellationException) {
                             console.warn("Export timed out for class: $className (>${PER_CLASS_TIMEOUT_MS})")
@@ -484,5 +484,12 @@ class ApiScanner(private val project: Project) {
 
     private suspend fun getEnabledExporters(): List<ClassExporter> {
         return ClassExporterRegistry.getInstance(project).getEnabledExporters()
+    }
+
+    private fun List<ApiEndpoint>.withSourceClass(psiClass: PsiClass): List<ApiEndpoint> {
+        if (none { it.sourceClass == null }) return this
+        return map { endpoint ->
+            if (endpoint.sourceClass == null) endpoint.copy(sourceClass = psiClass) else endpoint
+        }
     }
 }
