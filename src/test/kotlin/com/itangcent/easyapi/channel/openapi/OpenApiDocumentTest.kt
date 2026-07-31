@@ -83,6 +83,34 @@ class OpenApiDocumentTest {
     }
 
     @Test
+    fun pathItemRefSerializesUnderWireName() {
+        val pathItem = PathItemObject(`$ref` = "./paths/UserController.yaml#/paths/~1users")
+        val parsed = JsonParser.parseString(gson.toJson(pathItem)).asJsonObject
+
+        assertEquals(
+            "Path item should serialize its external reference under the OAS wire name",
+            "./paths/UserController.yaml#/paths/~1users",
+            parsed.get("\$ref").asString,
+        )
+        assertFalse("Kotlin property name must not leak onto the wire", parsed.has("ref"))
+    }
+
+    @Test
+    fun pathItemWithMethodPreservesRef() {
+        val original = PathItemObject(`$ref` = "./paths/UserController.yaml#/paths/~1users")
+        val getOp = OperationObject(operationId = "getUser", responses = linkedMapOf())
+
+        val mutated = original.withMethod(HttpMethod.GET, getOp)
+
+        assertEquals(
+            "Adding an operation should preserve the external path reference",
+            original.`$ref`,
+            mutated.`$ref`,
+        )
+        assertSame("GET operation should be added by copy", getOp, mutated.get)
+    }
+
+    @Test
     fun schemaObjectRefFieldSerializesAsDollarRef() {
         val schema = SchemaObject(`$ref` = "#/components/schemas/User")
         val json = gson.toJson(schema)

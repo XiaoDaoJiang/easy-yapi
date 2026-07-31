@@ -49,14 +49,16 @@ data class TagObject(
 )
 
 /**
- * OAS Path Item Object. Each HTTP method is a nullable field; absent methods
- * are omitted from serialized output (with `serializeNulls()` off / NON_NULL).
+ * OAS Path Item Object. Holds an optional external `$ref` and nullable HTTP
+ * method fields; absent values are omitted from serialized output (with
+ * `serializeNulls()` off / NON_NULL).
  *
  * `withMethod` returns a `copy(...)` so the [PathItemObject] is effectively
  * immutable from the formatter's perspective.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class PathItemObject(
+    @SerializedName("\$ref") @get:JsonProperty("\$ref") val `$ref`: String? = null,
     val get: OperationObject? = null,
     val post: OperationObject? = null,
     val put: OperationObject? = null,

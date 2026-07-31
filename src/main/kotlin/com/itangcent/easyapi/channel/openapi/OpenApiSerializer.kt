@@ -8,7 +8,7 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 
 /**
- * Channel-local serializer for [OpenApiDocument].
+ * Channel-local serializer for OpenAPI documents and document fragments.
  *
  * JSON output uses a channel-local [Gson] instance with `setPrettyPrinting()`,
  * `disableHtmlEscaping()`, `serializeNulls()` OFF so optional
@@ -46,9 +46,9 @@ object OpenApiSerializer {
             .build()
     }
 
-    /** Serializes [doc] to a pretty-printed JSON string. */
-    fun toJson(doc: OpenApiDocument): String = gson.toJson(doc)
+    /** Serializes [value] to a pretty-printed JSON string. */
+    fun toJson(value: Any): String = gson.toJson(value)
 
-    /** Serializes [doc] to a YAML string with no leading `---`. */
-    fun toYaml(doc: OpenApiDocument): String = yamlMapper.writeValueAsString(doc)
+    /** Serializes [value] to a YAML string with no leading `---`. */
+    fun toYaml(value: Any): String = yamlMapper.writeValueAsString(value)
 }
