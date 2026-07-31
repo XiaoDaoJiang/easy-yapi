@@ -23,6 +23,8 @@ import com.itangcent.easyapi.core.settings.settings
 import com.itangcent.easyapi.core.settings.ui.SettingsPanel
 import com.itangcent.easyapi.core.util.file.FileSelectHelper
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.AtomicMoveNotSupportedException
@@ -32,6 +34,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 
 /**
@@ -395,26 +398,30 @@ class OpenApiChannel : Channel, IdeaLog {
         metadata: OpenApiExportMetadata,
     ): Boolean {
         val rootDirectory = resolveTargetDirectory(project, config)
-        val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
-        val existingCount = background { targets.keys.count(Files::exists) }
-        if (existingCount > 0) {
-            val overwrite = swing {
-                Messages.showYesNoDialog(
-                    project,
-                    "Overwrite $existingCount existing OpenAPI files?",
-                    "Overwrite OpenAPI Files",
-                    Messages.getQuestionIcon(),
-                ) == Messages.YES
+        val canonicalRoot = background { resolveFutureRealPath(rootDirectory) }
+        val directoryMutex = MULTI_DOCUMENT_DIRECTORY_LOCKS.computeIfAbsent(canonicalRoot) { Mutex() }
+        directoryMutex.withLock {
+            val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
+            val existingCount = background { targets.keys.count(Files::exists) }
+            if (existingCount > 0) {
+                val overwrite = swing {
+                    Messages.showYesNoDialog(
+                        project,
+                        "Overwrite $existingCount existing OpenAPI files?",
+                        "Overwrite OpenAPI Files",
+                        Messages.getQuestionIcon(),
+                    ) == Messages.YES
+                }
+                if (!overwrite) {
+                    throw CancellationException("User cancelled OpenAPI file overwrite")
+                }
             }
-            if (!overwrite) {
-                throw CancellationException("User cancelled OpenAPI file overwrite")
-            }
-        }
 
-        background {
-            validateMultiDocumentTargets(rootDirectory, targets.keys)
-            targets.forEach { (target, content) ->
-                writeOutputFile(target, content)
+            background {
+                validateMultiDocumentTargets(rootDirectory, targets.keys)
+                targets.forEach { (target, content) ->
+                    writeOutputFile(target, content)
+                }
             }
         }
         LOG.info("OpenAPI multi-document export completed: $rootDirectory")
@@ -568,6 +575,11 @@ class OpenApiChannel : Channel, IdeaLog {
         OpenApiOutputFormat.JSON -> "openapi.json"
         OpenApiOutputFormat.YAML -> "openapi.yaml"
         OpenApiOutputFormat.ALWAYS_ASK -> error("unreachable — ALWAYS_ASK resolved at export step 2")
+    }
+
+    private companion object {
+        // ponytail: process-lifetime map; add ref-count eviction only if directory cardinality becomes measurable.
+        val MULTI_DOCUMENT_DIRECTORY_LOCKS = ConcurrentHashMap<Path, Mutex>()
     }
 
     /**

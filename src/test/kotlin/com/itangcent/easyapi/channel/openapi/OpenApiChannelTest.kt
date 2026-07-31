@@ -21,6 +21,11 @@ import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
 import com.intellij.testFramework.registerServiceInstance
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -714,6 +719,89 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
             )
         } finally {
             tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testConcurrentMultiDocumentExportsToSameDirectoryStayConsistent() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-concurrent")
+        val prompts = java.util.Collections.synchronizedList(mutableListOf<String>())
+        try {
+            Files.writeString(tempDir.resolve("openapi.yaml"), "existing root")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                prompts += message
+                Messages.YES
+            })
+            val first = multiDocumentResult(
+                format = OpenApiOutputFormat.YAML,
+                content = "batch-a root",
+                additionalFiles = linkedMapOf("paths/UserController.yaml" to "batch-a fragment"),
+                pathFragmentCount = 1,
+            )
+            val second = multiDocumentResult(
+                format = OpenApiOutputFormat.YAML,
+                content = "batch-b root",
+                additionalFiles = linkedMapOf("paths/UserController.yaml" to "batch-b fragment"),
+                pathFragmentCount = 1,
+            )
+
+            withTimeout(20_000) {
+                coroutineScope {
+                    listOf(first, second).map { result ->
+                        async(Dispatchers.Default) {
+                            channel.handleResult(
+                                project,
+                                result,
+                                ChannelConfig.FileConfig(tempDir.toString()),
+                            )
+                        }
+                    }.awaitAll()
+                }
+            }
+
+            val rootBatch = Files.readString(tempDir.resolve("openapi.yaml")).substringBefore(' ')
+            val fragmentBatch = Files.readString(tempDir.resolve("paths/UserController.yaml")).substringBefore(' ')
+            assertEquals("Root and referenced fragment must come from the same export batch", rootBatch, fragmentBatch)
+            val overwritePrompts = prompts.filter { it.contains("existing OpenAPI", ignoreCase = true) }
+            assertEquals("Each batch should confirm against the state it actually observed", 2, overwritePrompts.size)
+            assertTrue(
+                "The waiting export should recount both files after the first export: $overwritePrompts",
+                overwritePrompts.any { it.contains("2") },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testConcurrentMultiDocumentExportsToDifferentDirectoriesComplete() = runTest {
+        val firstDir = Files.createTempDirectory("openapi-multi-concurrent-a")
+        val secondDir = Files.createTempDirectory("openapi-multi-concurrent-b")
+        try {
+            withTimeout(20_000) {
+                coroutineScope {
+                    listOf(firstDir to "a", secondDir to "b").map { (directory, marker) ->
+                        async(Dispatchers.Default) {
+                            channel.handleResult(
+                                project,
+                                multiDocumentResult(
+                                    format = OpenApiOutputFormat.YAML,
+                                    content = "$marker root",
+                                    additionalFiles = linkedMapOf(
+                                        "paths/UserController.yaml" to "$marker fragment",
+                                    ),
+                                    pathFragmentCount = 1,
+                                ),
+                                ChannelConfig.FileConfig(directory.toString()),
+                            )
+                        }
+                    }.awaitAll()
+                }
+            }
+
+            assertEquals("First directory should receive its root", "a root", Files.readString(firstDir.resolve("openapi.yaml")))
+            assertEquals("Second directory should receive its root", "b root", Files.readString(secondDir.resolve("openapi.yaml")))
+        } finally {
+            firstDir.toFile().deleteRecursively()
+            secondDir.toFile().deleteRecursively()
         }
     }
 

@@ -266,6 +266,89 @@ class OpenApiMultiDocumentSplitterTest {
     }
 
     @Test
+    fun testPreservesValidPercentEscapesWhenRewritingInternalSchemaRefs() {
+        val refs = linkedMapOf(
+            "encoded-space" to "#/components/schemas/User%20Profile",
+            "encoded-hash" to "#/components/schemas/Hash%23Tag",
+            "raw-space" to "#/components/schemas/User Profile",
+            "raw-hash" to "#/components/schemas/Hash#Tag",
+            "raw-unicode" to "#/components/schemas/用户{}",
+            "invalid-percent" to "#/components/schemas/Bad%zz",
+            "external" to "./common.yaml#/components/schemas/User%20Profile",
+        )
+        val operation = OperationObject(
+            operationId = "getUsers",
+            responses = linkedMapOf(
+                "200" to ResponseObject(
+                    description = "OK",
+                    content = linkedMapOf(
+                        "application/json" to MediaTypeObject(
+                            schema = SchemaObject(
+                                properties = refs.mapValuesTo(linkedMapOf()) { (_, ref) ->
+                                    SchemaObject(`$ref` = ref)
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint("/users", HttpMethod.GET, "com.acme.UserController")),
+        ).split(
+            document(
+                linkedMapOf("/users" to PathItemObject(get = operation)),
+                ComponentsObject(linkedMapOf("Dummy" to SchemaObject(type = "object"))),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        val rewritten = (result.additionalDocuments.getValue("paths/UserController.yaml")
+            as OpenApiPathsFragment)
+            .paths.getValue("/users").get!!.responses.getValue("200").content!!
+            .getValue("application/json").schema.properties!!
+            .mapValues { it.value.`$ref` }
+        assertEquals(
+            "Existing percent-encoded space must not be encoded again",
+            "../schemas/schemas.yaml#/components/schemas/User%20Profile",
+            rewritten["encoded-space"],
+        )
+        assertEquals(
+            "Existing percent-encoded hash must not be encoded again",
+            "../schemas/schemas.yaml#/components/schemas/Hash%23Tag",
+            rewritten["encoded-hash"],
+        )
+        assertEquals(
+            "Raw spaces should be percent-encoded",
+            "../schemas/schemas.yaml#/components/schemas/User%20Profile",
+            rewritten["raw-space"],
+        )
+        assertEquals(
+            "Raw hashes should be percent-encoded",
+            "../schemas/schemas.yaml#/components/schemas/Hash%23Tag",
+            rewritten["raw-hash"],
+        )
+        assertEquals(
+            "Raw Unicode and braces should be encoded as UTF-8",
+            "../schemas/schemas.yaml#/components/schemas/%E7%94%A8%E6%88%B7%7B%7D",
+            rewritten["raw-unicode"],
+        )
+        assertEquals(
+            "Invalid percent escapes should encode the percent sign",
+            "../schemas/schemas.yaml#/components/schemas/Bad%25zz",
+            rewritten["invalid-percent"],
+        )
+        assertEquals(
+            "External references must remain unchanged",
+            refs.getValue("external"),
+            rewritten["external"],
+        )
+        rewritten.values.filterNotNull().forEach { ref ->
+            assertEquals("Every rewritten reference should be a strict ASCII URI", ref, URI.create(ref).toASCIIString())
+        }
+    }
+
+    @Test
     fun testAllocatesShortestUniquePackageSuffixIndependentOfEndpointOrder() {
         val first = endpoint("/patient", HttpMethod.GET, "com.acme.patient.UserController")
         val second = endpoint("/admin", HttpMethod.GET, "com.acme.admin.UserController")
@@ -448,6 +531,35 @@ class OpenApiMultiDocumentSplitterTest {
             result.rootDocument.paths.mapValues { it.value.`$ref` },
             reversed.rootDocument.paths.mapValues { it.value.`$ref` },
         )
+    }
+
+    @Test
+    fun testLimitsUnicodeFilenamesByUtf8BytesAndKeepsStableHash() {
+        val longFolder = "中".repeat(37) + "😀" + "文".repeat(80)
+        val endpoint = endpoint("/unicode", HttpMethod.GET, null, longFolder)
+        val document = document(linkedMapOf("/unicode" to pathItem(HttpMethod.GET, "unicode")))
+
+        val first = OpenApiMultiDocumentSplitter(listOf(endpoint))
+            .split(document, OpenApiOutputFormat.YAML)
+        val second = OpenApiMultiDocumentSplitter(listOf(endpoint))
+            .split(document, OpenApiOutputFormat.YAML)
+        val stem = first.additionalDocuments.keys.single()
+            .removePrefix("paths/")
+            .removeSuffix(".yaml")
+
+        assertTrue(
+            "Filename stem must stay within the 120-byte UTF-8 budget",
+            stem.toByteArray(Charsets.UTF_8).size <= 120,
+        )
+        assertTrue("Long filename should retain an 8-hex stable hash", Regex(""".*-[0-9a-f]{8}$""").matches(stem))
+        assertFalse("Code-point truncation must not leave an unpaired surrogate", stem.any(Char::isSurrogate))
+        assertEquals(
+            "Filename hashing should be stable",
+            first.additionalDocuments.keys,
+            second.additionalDocuments.keys,
+        )
+        val ref = first.rootDocument.paths.getValue("/unicode").`$ref`!!
+        assertEquals("Reference using the bounded filename should be a valid URI", ref, URI.create(ref).toASCIIString())
     }
 
     @Test
