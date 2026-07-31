@@ -27,6 +27,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
@@ -411,6 +412,7 @@ class OpenApiChannel : Channel, IdeaLog {
         }
 
         background {
+            validateMultiDocumentTargets(rootDirectory, targets.keys)
             targets.forEach { (target, content) ->
                 writeOutputFile(target, content)
             }
@@ -465,16 +467,63 @@ class OpenApiChannel : Channel, IdeaLog {
         val root = rootDirectory.toAbsolutePath().normalize()
         val targets = linkedMapOf<Path, String>()
         metadata.additionalFiles.forEach { (relativePath, content) ->
-            val target = root.resolve(relativePath).normalize()
+            val relative = Paths.get(relativePath)
+            require(!relative.isAbsolute) {
+                "OpenAPI output path must be relative: $relativePath"
+            }
+            val target = root.resolve(relative).normalize()
             require(target.startsWith(root)) {
                 "OpenAPI output path escapes the selected directory: $relativePath"
+            }
+            require(!targets.containsKey(target)) {
+                "Multiple OpenAPI output files resolve to the same target: $target"
             }
             targets[target] = content
         }
         val rootTarget = root.resolve(defaultFileName(metadata.outputFormat)).normalize()
-        targets.remove(rootTarget)
+        require(!targets.containsKey(rootTarget)) {
+            "OpenAPI additional file conflicts with the root document: $rootTarget"
+        }
         targets[rootTarget] = metadata.content
         return targets
+    }
+
+    /** @requires Background context. */
+    private fun validateMultiDocumentTargets(
+        rootDirectory: Path,
+        targets: Collection<Path>,
+    ) {
+        val canonicalRoot = resolveFutureRealPath(rootDirectory)
+        targets.forEach { target ->
+            val parent = requireNotNull(target.parent) {
+                "OpenAPI output file has no parent directory: $target"
+            }
+            val canonicalParent = resolveFutureRealPath(parent)
+            require(canonicalParent.startsWith(canonicalRoot)) {
+                "OpenAPI output path resolves outside the selected directory: $target"
+            }
+        }
+    }
+
+    private fun resolveFutureRealPath(path: Path): Path {
+        var existingAncestor = path.toAbsolutePath().normalize()
+        val missingSegments = ArrayDeque<Path>()
+        while (!Files.exists(existingAncestor, NOFOLLOW_LINKS)) {
+            missingSegments.addFirst(
+                requireNotNull(existingAncestor.fileName) {
+                    "Cannot resolve OpenAPI output path: $path"
+                }
+            )
+            existingAncestor = requireNotNull(existingAncestor.parent) {
+                "Cannot find an existing ancestor for OpenAPI output path: $path"
+            }
+        }
+
+        var resolved = existingAncestor.toRealPath()
+        missingSegments.forEach { segment ->
+            resolved = resolved.resolve(segment)
+        }
+        return resolved.normalize()
     }
 
     /** @requires Background context. */

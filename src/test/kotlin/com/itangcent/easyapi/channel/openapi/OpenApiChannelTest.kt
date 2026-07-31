@@ -15,21 +15,24 @@ import com.itangcent.easyapi.core.settings.SettingBinder
 import com.itangcent.easyapi.core.settings.update
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
 import com.itangcent.easyapi.testFramework.TestConfigReader
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
-import com.intellij.openapi.ui.Messages
 import com.intellij.psi.PsiMethod
 import com.intellij.testFramework.registerServiceInstance
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
-import kotlinx.coroutines.CancellationException
+import java.nio.file.Path
 
 /**
  * Tests for [OpenApiChannel].
@@ -828,6 +831,145 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testHandleResultRejectsNormalizedDuplicateTargetsBeforeWriting() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-duplicate")
+        try {
+            assertMultiDocumentTargetsRejected(
+                tempDir,
+                linkedMapOf(
+                    "paths/A.yaml" to "first",
+                    "paths/../paths/A.yaml" to "second",
+                ),
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsAdditionalFileThatConflictsWithRoot() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-root-conflict")
+        try {
+            assertMultiDocumentTargetsRejected(
+                tempDir,
+                linkedMapOf("openapi.yaml" to "not the root document"),
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsAbsoluteAdditionalFilePath() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-absolute")
+        try {
+            assertMultiDocumentTargetsRejected(
+                tempDir,
+                linkedMapOf(tempDir.resolve("paths/A.yaml").toString() to "absolute"),
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsWindowsBackslashTraversalBeforeWriting() = runTest {
+        if (File.separatorChar != '\\') return@runTest
+        val tempDir = Files.createTempDirectory("openapi-multi-backslash")
+        val escaped = tempDir.parent.resolve("escape-${tempDir.fileName}.yaml")
+        try {
+            assertMultiDocumentTargetsRejected(
+                tempDir,
+                linkedMapOf("..\\${escaped.fileName}" to "escaped"),
+            )
+            assertFalse("Backslash traversal must not write outside the root", Files.exists(escaped))
+        } finally {
+            Files.deleteIfExists(escaped)
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsSymlinkedChildDirectoryBeforeWriting() = runTest {
+        val root = Files.createTempDirectory("openapi-multi-symlink-root")
+        val outside = Files.createTempDirectory("openapi-multi-symlink-outside")
+        val pathsLink = root.resolve("paths")
+        try {
+            try {
+                Files.createSymbolicLink(pathsLink, outside)
+            } catch (e: Exception) {
+                if (e is UnsupportedOperationException || e is IOException || e is SecurityException) {
+                    Assume.assumeNoException(e)
+                }
+                throw e
+            }
+
+            var rejected = false
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "fragment"),
+                    ),
+                    ChannelConfig.FileConfig(root.toString()),
+                )
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+
+            assertTrue("A child symlink outside the selected root should be rejected", rejected)
+            assertFalse(
+                "Symlink target must not receive the controller fragment",
+                Files.exists(outside.resolve("UserController.yaml")),
+            )
+            assertFalse("Root document must not be published", Files.exists(root.resolve("openapi.yaml")))
+        } finally {
+            Files.deleteIfExists(pathsLink)
+            root.toFile().deleteRecursively()
+            outside.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultFragmentWriteFailureKeepsRootAndCleansTemporaryFile() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-write-failure")
+        try {
+            val root = tempDir.resolve("openapi.yaml")
+            val fragmentTarget = tempDir.resolve("paths/UserController.yaml")
+            Files.createDirectories(fragmentTarget)
+            Files.writeString(fragmentTarget.resolve("keep.txt"), "prevents directory replacement")
+            Files.writeString(root, "old root")
+            TestDialogManager.setTestDialog(TestDialog { Messages.YES })
+
+            var failure: IllegalStateException? = null
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "new fragment"),
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (e: IllegalStateException) {
+                failure = e
+            }
+
+            assertNotNull("Fragment replacement should fail", failure)
+            assertTrue(
+                "Failure should identify the exact fragment target: ${failure?.message}",
+                failure?.message?.contains(fragmentTarget.toString()) == true,
+            )
+            assertEquals("Root must be written last and remain unchanged", "old root", Files.readString(root))
+            assertTrue(
+                "Failed write must not leave temporary files",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
     fun testHandleResultShowsMultiDocumentWarnings() = runTest {
         val tempDir = Files.createTempDirectory("openapi-multi-warning")
         val dialogs = mutableListOf<String>()
@@ -947,6 +1089,33 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
             warnings = warnings,
         ),
     )
+
+    private suspend fun assertMultiDocumentTargetsRejected(
+        tempDir: Path,
+        additionalFiles: LinkedHashMap<String, String>,
+    ) {
+        var rejected = false
+        try {
+            channel.handleResult(
+                project,
+                multiDocumentResult(
+                    format = OpenApiOutputFormat.YAML,
+                    content = "root",
+                    additionalFiles = additionalFiles,
+                ),
+                ChannelConfig.FileConfig(tempDir.toString()),
+            )
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+
+        assertTrue("Unsafe output targets should be rejected: ${additionalFiles.keys}", rejected)
+        assertFalse("Root must not be published after target rejection", Files.exists(tempDir.resolve("openapi.yaml")))
+        assertTrue(
+            "Target rejection must happen before writing any file",
+            Files.walk(tempDir).use { files -> files.noneMatch(Files::isRegularFile) },
+        )
+    }
 
     private fun grpcEndpoint(): ApiEndpoint = ApiEndpoint(
         name = "SayHello",
