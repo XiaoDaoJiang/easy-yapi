@@ -21,8 +21,16 @@ import com.itangcent.easyapi.core.rule.engine.RuleEngine
 import com.itangcent.easyapi.core.settings.Settings
 import com.itangcent.easyapi.core.settings.settings
 import com.itangcent.easyapi.core.settings.ui.SettingsPanel
+import com.itangcent.easyapi.core.util.file.FileSelectHelper
 import kotlinx.coroutines.CancellationException
 import java.io.File
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlin.reflect.KClass
 
 /**
@@ -64,14 +72,13 @@ import kotlin.reflect.KClass
  *
  * ## handleResult
  *
- * Writes the pre-serialized content to the user-chosen file using
- * `background { }` for the I/O and `swing { }` for the success dialog (mirrors
- * [com.itangcent.easyapi.channel.markdown.MarkdownChannel.handleResult] and
- * [com.itangcent.easyapi.channel.hoppscotch.HoppscotchChannel.handleFileExport]).
+ * Writes the pre-serialized content to the user-chosen file or directory using
+ * `background { }` for the I/O and `swing { }` for dialogs (mirrors
+ * [com.itangcent.easyapi.channel.markdown.MarkdownChannel.handleResult]).
  *
  * Default file name is `openapi.json` or `openapi.yaml` based on the format.
- * Throws [CancellationException] when the user cancels the save dialog so the
- * orchestrator can propagate the cancellation.
+ * Throws [CancellationException] when the user cancels target selection or a
+ * multi-document overwrite.
  *
  * ## Logging
  *
@@ -345,6 +352,21 @@ class OpenApiChannel : Channel, IdeaLog {
     ): Boolean {
         val metadata = result.metadata as? OpenApiExportMetadata ?: return false
 
+        return when (metadata.documentMode) {
+            OpenApiDocumentMode.SINGLE_FILE ->
+                handleSingleFileResult(project, result, config, metadata)
+            OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER ->
+                handleMultiDocumentResult(project, result, config, metadata)
+        }
+    }
+
+    /** @requires Background for file I/O and EDT for dialogs. */
+    private suspend fun handleSingleFileResult(
+        project: Project,
+        result: ExportResult.Success,
+        config: ChannelConfig,
+        metadata: OpenApiExportMetadata,
+    ): Boolean {
         val defaultFileName = defaultFileName(metadata.outputFormat)
         val targetFile = resolveTargetFile(project, config, defaultFileName)
             ?: throw CancellationException("User cancelled file selection")
@@ -362,6 +384,132 @@ class OpenApiChannel : Channel, IdeaLog {
             )
         }
         return true
+    }
+
+    /** @requires Background for file I/O and EDT for dialogs. */
+    private suspend fun handleMultiDocumentResult(
+        project: Project,
+        result: ExportResult.Success,
+        config: ChannelConfig,
+        metadata: OpenApiExportMetadata,
+    ): Boolean {
+        val rootDirectory = resolveTargetDirectory(project, config)
+        val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
+        val existingCount = background { targets.keys.count(Files::exists) }
+        if (existingCount > 0) {
+            val overwrite = swing {
+                Messages.showYesNoDialog(
+                    project,
+                    "Overwrite $existingCount existing OpenAPI files?",
+                    "Overwrite OpenAPI Files",
+                    Messages.getQuestionIcon(),
+                ) == Messages.YES
+            }
+            if (!overwrite) {
+                throw CancellationException("User cancelled OpenAPI file overwrite")
+            }
+        }
+
+        background {
+            targets.forEach { (target, content) ->
+                writeOutputFile(target, content)
+            }
+        }
+        LOG.info("OpenAPI multi-document export completed: $rootDirectory")
+
+        val message = buildString {
+            appendLine("Successfully exported ${result.count} endpoints to $rootDirectory")
+            appendLine("Path fragments: ${metadata.pathFragmentCount}")
+            appendLine("Schemas: ${metadata.schemaCount}")
+            append("Unresolved paths: ${metadata.unresolvedPathCount}")
+            if (metadata.warnings.isNotEmpty()) {
+                appendLine()
+                appendLine()
+                appendLine("Warnings:")
+                append(metadata.warnings.joinToString(separator = "\n"))
+            }
+        }
+        swing {
+            if (metadata.warnings.isEmpty()) {
+                Messages.showInfoMessage(project, message, "Export API")
+            } else {
+                Messages.showWarningDialog(project, message, "Export API")
+            }
+        }
+        return true
+    }
+
+    /** @requires EDT when the configured output directory is absent. */
+    private suspend fun resolveTargetDirectory(
+        project: Project,
+        config: ChannelConfig,
+    ): Path {
+        val configuredDirectory = (config as? ChannelConfig.FileConfig)
+            ?.outputDir
+            ?.takeIf { it.isNotBlank() }
+        if (configuredDirectory != null) {
+            return Paths.get(configuredDirectory).toAbsolutePath().normalize()
+        }
+
+        val selected = swing {
+            FileSelectHelper.getInstance(project)
+                .selectDirectory("Select OpenAPI Output Directory", project)
+        } ?: throw CancellationException("User cancelled directory selection")
+        return Paths.get(selected.path).toAbsolutePath().normalize()
+    }
+
+    private fun resolveMultiDocumentTargets(
+        rootDirectory: Path,
+        metadata: OpenApiExportMetadata,
+    ): LinkedHashMap<Path, String> {
+        val root = rootDirectory.toAbsolutePath().normalize()
+        val targets = linkedMapOf<Path, String>()
+        metadata.additionalFiles.forEach { (relativePath, content) ->
+            val target = root.resolve(relativePath).normalize()
+            require(target.startsWith(root)) {
+                "OpenAPI output path escapes the selected directory: $relativePath"
+            }
+            targets[target] = content
+        }
+        val rootTarget = root.resolve(defaultFileName(metadata.outputFormat)).normalize()
+        targets.remove(rootTarget)
+        targets[rootTarget] = metadata.content
+        return targets
+    }
+
+    /** @requires Background context. */
+    private fun writeOutputFile(target: Path, content: String) {
+        var temporaryFile: Path? = null
+        var failure: Throwable? = null
+        try {
+            val parent = requireNotNull(target.parent) {
+                "OpenAPI output file has no parent directory: $target"
+            }
+            Files.createDirectories(parent)
+            temporaryFile = Files.createTempFile(parent, ".easyapi-openapi-", ".tmp")
+            Files.writeString(temporaryFile, content, UTF_8)
+            try {
+                Files.move(temporaryFile, target, ATOMIC_MOVE, REPLACE_EXISTING)
+            } catch (e: AtomicMoveNotSupportedException) {
+                LOG.info("Atomic move is not supported for OpenAPI output file: $target", e)
+                Files.move(temporaryFile, target, REPLACE_EXISTING)
+            }
+        } catch (e: Exception) {
+            failure = e
+        } finally {
+            temporaryFile?.let { temp ->
+                try {
+                    Files.deleteIfExists(temp)
+                } catch (e: Exception) {
+                    failure?.addSuppressed(e) ?: run { failure = e }
+                }
+            }
+        }
+
+        failure?.let { error ->
+            LOG.warn("Failed to write OpenAPI output file: $target", error)
+            throw IllegalStateException("Failed to write OpenAPI output file: $target", error)
+        }
     }
 
     /**

@@ -17,6 +17,7 @@ import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCas
 import com.itangcent.easyapi.testFramework.TestConfigReader
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
+import com.intellij.openapi.ui.Messages
 import com.intellij.psi.PsiMethod
 import com.intellij.testFramework.registerServiceInstance
 import org.junit.Assert.assertEquals
@@ -27,6 +28,8 @@ import org.junit.Assert.assertTrue
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import java.io.File
+import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
 
 /**
  * Tests for [OpenApiChannel].
@@ -598,6 +601,269 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testHandleResultWritesMultiDocumentYamlFiles() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-yaml")
+        try {
+            val result = multiDocumentResult(
+                format = OpenApiOutputFormat.YAML,
+                content = "paths:\n  /users:\n    \$ref: './paths/UserController.yaml#/paths/~1users'\n",
+                additionalFiles = linkedMapOf(
+                    "paths/UserController.yaml" to
+                        "paths:\n  /users:\n    get:\n      responses: {}\n",
+                    "schemas/schemas.yaml" to
+                        "components:\n  schemas:\n    User:\n      type: object\n",
+                ),
+                pathFragmentCount = 1,
+                schemaCount = 1,
+            )
+
+            assertTrue(
+                "Multi-document YAML result should be handled",
+                channel.handleResult(
+                    project,
+                    result,
+                    ChannelConfig.FileConfig(tempDir.toString(), "ignored.yaml"),
+                ),
+            )
+
+            val root = tempDir.resolve("openapi.yaml")
+            val pathFragment = tempDir.resolve("paths/UserController.yaml")
+            val schemas = tempDir.resolve("schemas/schemas.yaml")
+            assertTrue("Root openapi.yaml should be written", Files.exists(root))
+            assertTrue("Controller path fragment should be written", Files.exists(pathFragment))
+            assertTrue("Optional schema document should be written", Files.exists(schemas))
+            assertTrue(
+                "Root should retain its fragment reference",
+                Files.readString(root).contains("./paths/UserController.yaml#/paths/~1users"),
+            )
+            assertTrue(
+                "No temporary files should remain",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultWritesMultiDocumentJsonRootName() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-json")
+        try {
+            channel.handleResult(
+                project,
+                multiDocumentResult(
+                    format = OpenApiOutputFormat.JSON,
+                    content = """{"openapi":"3.0.3"}""",
+                    additionalFiles = linkedMapOf(
+                        "paths/UserController.json" to """{"paths":{}}""",
+                    ),
+                    pathFragmentCount = 1,
+                ),
+                ChannelConfig.FileConfig(tempDir.toString(), "ignored-name.yaml"),
+            )
+
+            assertTrue("JSON multi-document root should use fixed name", Files.exists(tempDir.resolve("openapi.json")))
+            assertFalse(
+                "FileConfig.fileName must be ignored in multi-document mode",
+                Files.exists(tempDir.resolve("ignored-name.yaml")),
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultConfirmsExistingTargetsOnceThenOverwritesAll() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-overwrite")
+        val prompts = mutableListOf<String>()
+        try {
+            val root = tempDir.resolve("openapi.yaml")
+            val fragment = tempDir.resolve("paths/UserController.yaml")
+            Files.createDirectories(fragment.parent)
+            Files.writeString(root, "old root")
+            Files.writeString(fragment, "old fragment")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                prompts += message
+                Messages.YES
+            })
+
+            channel.handleResult(
+                project,
+                multiDocumentResult(
+                    format = OpenApiOutputFormat.YAML,
+                    content = "new root",
+                    additionalFiles = linkedMapOf("paths/UserController.yaml" to "new fragment"),
+                    pathFragmentCount = 1,
+                ),
+                ChannelConfig.FileConfig(tempDir.toString()),
+            )
+
+            assertEquals("Root should be replaced", "new root", Files.readString(root))
+            assertEquals("Fragment should be replaced", "new fragment", Files.readString(fragment))
+            assertEquals(
+                "Existing targets should trigger exactly one overwrite prompt",
+                1,
+                prompts.count { it.contains("existing OpenAPI", ignoreCase = true) },
+            )
+            assertTrue(
+                "Overwrite prompt should report both existing targets: $prompts",
+                prompts.any { it.contains("2") },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultDeclinedOverwriteLeavesAllTargetsUntouched() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-decline")
+        try {
+            val root = tempDir.resolve("openapi.yaml")
+            val fragment = tempDir.resolve("paths/UserController.yaml")
+            val newSchema = tempDir.resolve("schemas/schemas.yaml")
+            Files.createDirectories(fragment.parent)
+            Files.writeString(root, "old root")
+            Files.writeString(fragment, "old fragment")
+            TestDialogManager.setTestDialog(TestDialog { Messages.NO })
+
+            var cancelled = false
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf(
+                            "paths/UserController.yaml" to "new fragment",
+                            "schemas/schemas.yaml" to "new schema",
+                        ),
+                        pathFragmentCount = 1,
+                        schemaCount = 1,
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (_: CancellationException) {
+                cancelled = true
+            }
+
+            assertTrue("Declining overwrite should cancel the export", cancelled)
+            assertEquals("Existing root must stay untouched", "old root", Files.readString(root))
+            assertEquals("Existing fragment must stay untouched", "old fragment", Files.readString(fragment))
+            assertFalse("Missing schema target must not be created", Files.exists(newSchema))
+            assertFalse("Missing schema directory must not be created", Files.exists(newSchema.parent))
+            assertTrue(
+                "Declining overwrite must not leave temporary files",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultOnlyCountsCurrentTargetsAndKeepsStaleFiles() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-stale")
+        val prompts = mutableListOf<String>()
+        try {
+            val root = tempDir.resolve("openapi.yaml")
+            val stale = tempDir.resolve("paths/OldController.yaml")
+            Files.createDirectories(stale.parent)
+            Files.writeString(root, "old root")
+            Files.writeString(stale, "stale content")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                prompts += message
+                Messages.YES
+            })
+
+            channel.handleResult(
+                project,
+                multiDocumentResult(
+                    format = OpenApiOutputFormat.YAML,
+                    content = "new root",
+                    additionalFiles = linkedMapOf("paths/UserController.yaml" to "new fragment"),
+                    pathFragmentCount = 1,
+                ),
+                ChannelConfig.FileConfig(tempDir.toString()),
+            )
+
+            val overwritePrompts = prompts.filter {
+                it.contains("existing OpenAPI", ignoreCase = true)
+            }
+            assertEquals("Stale files must not add overwrite prompts", 1, overwritePrompts.size)
+            assertTrue(
+                "Only the existing root target should be counted: $prompts",
+                overwritePrompts.single().contains("1"),
+            )
+            assertEquals("Stale files must not be deleted or changed", "stale content", Files.readString(stale))
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsPathTraversalBeforeWriting() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-traversal")
+        val escaped = tempDir.parent.resolve("escape-${tempDir.fileName}.yaml")
+        try {
+            var rejected = false
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "root",
+                        additionalFiles = linkedMapOf("../${escaped.fileName}" to "escaped"),
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+
+            assertTrue("Parent-directory traversal should be rejected", rejected)
+            assertFalse("No root file should be written after rejection", Files.exists(tempDir.resolve("openapi.yaml")))
+            assertFalse("No file should be written outside the root", Files.exists(escaped))
+        } finally {
+            Files.deleteIfExists(escaped)
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultShowsMultiDocumentWarnings() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-warning")
+        val dialogs = mutableListOf<String>()
+        try {
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                dialogs += message
+                Messages.YES
+            })
+
+            channel.handleResult(
+                project,
+                multiDocumentResult(
+                    format = OpenApiOutputFormat.YAML,
+                    content = "root",
+                    additionalFiles = linkedMapOf("paths/Unresolved.yaml" to "unresolved"),
+                    pathFragmentCount = 1,
+                    unresolvedPathCount = 1,
+                    warnings = listOf("Path /hooked has no endpoint owner"),
+                ),
+                ChannelConfig.FileConfig(tempDir.toString()),
+            )
+
+            assertTrue(
+                "Success dialog should include split counts and warning text: $dialogs",
+                dialogs.any {
+                    it.contains("Path fragments: 1") &&
+                        it.contains("Schemas: 0") &&
+                        it.contains("Unresolved paths: 1") &&
+                        it.contains("Path /hooked has no endpoint owner")
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
     fun testHandleResultReturnsFalseForForeignMetadata() = runTest {
         // When the metadata is not OpenApiExportMetadata, handleResult should
         // return false so the orchestrator can fall back to default handling.
@@ -652,6 +918,33 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         channelConfig = OpenApiConfig(
             outputFormat = outputFormat,
             documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
+        ),
+    )
+
+    private fun multiDocumentResult(
+        format: OpenApiOutputFormat,
+        content: String,
+        additionalFiles: LinkedHashMap<String, String>,
+        pathFragmentCount: Int = 0,
+        schemaCount: Int = 0,
+        unresolvedPathCount: Int = 0,
+        warnings: List<String> = emptyList(),
+    ): ExportResult.Success = ExportResult.Success(
+        count = 2,
+        target = "OpenAPI",
+        metadata = OpenApiExportMetadata(
+            document = OpenApiDocument(
+                info = InfoObject(title = "Test", version = "1.0.0"),
+                paths = linkedMapOf(),
+            ),
+            outputFormat = format,
+            content = content,
+            documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
+            additionalFiles = additionalFiles,
+            pathFragmentCount = pathFragmentCount,
+            schemaCount = schemaCount,
+            unresolvedPathCount = unresolvedPathCount,
+            warnings = warnings,
         ),
     )
 
