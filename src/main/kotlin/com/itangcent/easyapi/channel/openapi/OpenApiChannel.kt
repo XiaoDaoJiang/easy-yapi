@@ -46,18 +46,20 @@ import kotlin.reflect.KClass
  *    options-panel > persistent settings > built-in default (`ALWAYS_ASK`).
  *    When `ALWAYS_ASK` is selected, [promptFormat] prompts the user on EDT
  *    — throws [CancellationException] on cancel.
- * 3. Resolve the rule-resolved [OpenApiEnvelope] via
+ * 3. In multi-document mode, validate normalized path ownership before the
+ *    formatter can collapse methods from different controllers.
+ * 4. Resolve the rule-resolved [OpenApiEnvelope] via
  *    [resolveRuleBasedEnvelope] — document-level metadata (`info.title`,
  *    `info.version`, `info.description`, `server.url`) come from rule scripts
  *    only. Built-in defaults: `infoTitle = projectName ?: "API"`,
  *    `infoVersion = "1.0.0"`, others `null`.
- * 4. Build the [OpenApiDocument] via [OpenApiFormatter] (pure).
- * 5. Fire the `openapi.format.after` event — scripts can
+ * 5. Build the [OpenApiDocument] via [OpenApiFormatter] (pure).
+ * 6. Fire the `openapi.format.after` event — scripts can
  *    mutate the in-memory document before serialization. The document is
  *    exposed via the rule context extension `"document"`.
- * 6. Serialize via [OpenApiSerializer] — JSON (Gson) or YAML (Jackson
- *    `YAMLMapper`) depending on the effective format.
- * 7. Wrap the document + format + pre-serialized content in
+ * 7. Serialize the full document, or split it after the hook and serialize
+ *    the root plus additional documents.
+ * 8. Wrap the document + format + pre-serialized content in
  *    [OpenApiExportMetadata] and return `ExportResult.Success`.
  *
  * ## handleResult
@@ -140,30 +142,74 @@ class OpenApiChannel : Channel, IdeaLog {
             else -> typedFormat
         }
 
-        // 3. Resolve envelope metadata from rules only.
+        // 3. Validate multi-document ownership before formatter path collapse.
+        val multiDocumentSplitter =
+            if (typed.documentMode == OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER) {
+                try {
+                    OpenApiMultiDocumentSplitter(httpEndpoints)
+                } catch (e: IllegalArgumentException) {
+                    LOG.warn("OpenAPI multi-document path ownership validation failed", e)
+                    return ExportResult.Error(
+                        e.message ?: "OpenAPI multi-document path ownership validation failed"
+                    )
+                }
+            } else {
+                null
+            }
+
+        // 4. Resolve envelope metadata from rules only.
         //    No settings/options-panel fallback for these fields.
         val envelope = resolveRuleBasedEnvelope(project, project.name)
 
-        // 4. Build the document (pure — no rule engine, no I/O).
+        // 5. Build the document (pure — no rule engine, no I/O).
         val formatter = OpenApiFormatter(project)
         val document = formatter.format(httpEndpoints, envelope)
 
-        // 5. Fire openapi.format.after event.
+        // 6. Fire openapi.format.after event.
         //    Scripts can mutate the in-memory document before serialization.
         fireFormatAfterEvent(project, httpEndpoints, document)
 
-        // 6. Serialize. ALWAYS_ASK is already resolved above.
-        val content = when (effectiveFormat) {
-            OpenApiOutputFormat.JSON -> OpenApiSerializer.toJson(document)
-            OpenApiOutputFormat.YAML -> OpenApiSerializer.toYaml(document)
-            OpenApiOutputFormat.ALWAYS_ASK -> error("unreachable — ALWAYS_ASK resolved at step 2")
+        if (multiDocumentSplitter == null) {
+            return ExportResult.Success(
+                count = httpEndpoints.size,
+                target = "OpenAPI",
+                metadata = OpenApiExportMetadata(
+                    document,
+                    effectiveFormat,
+                    serialize(document, effectiveFormat),
+                ),
+            )
         }
+
+        val multiDocument = multiDocumentSplitter.split(document, effectiveFormat)
+        val content = serialize(multiDocument.rootDocument, effectiveFormat)
+        val additionalFiles = multiDocument.additionalDocuments.mapValuesTo(linkedMapOf()) { (_, value) ->
+            serialize(value, effectiveFormat)
+        }
+        multiDocument.warnings.forEach(LOG::warn)
 
         return ExportResult.Success(
             count = httpEndpoints.size,
             target = "OpenAPI",
-            metadata = OpenApiExportMetadata(document, effectiveFormat, content),
+            metadata = OpenApiExportMetadata(
+                document = document,
+                outputFormat = effectiveFormat,
+                content = content,
+                documentMode = typed.documentMode,
+                additionalFiles = additionalFiles,
+                pathFragmentCount = multiDocument.pathFragmentCount,
+                schemaCount = multiDocument.schemaCount,
+                unresolvedPathCount = multiDocument.unresolvedPathCount,
+                warnings = multiDocument.warnings,
+            ),
         )
+    }
+
+    private fun serialize(value: Any, format: OpenApiOutputFormat): String = when (format) {
+        OpenApiOutputFormat.JSON -> OpenApiSerializer.toJson(value)
+        OpenApiOutputFormat.YAML -> OpenApiSerializer.toYaml(value)
+        OpenApiOutputFormat.ALWAYS_ASK ->
+            error("unreachable — ALWAYS_ASK resolved before serialization")
     }
 
     // ─── ALWAYS_ASK prompt ────────────────────────────────────────────

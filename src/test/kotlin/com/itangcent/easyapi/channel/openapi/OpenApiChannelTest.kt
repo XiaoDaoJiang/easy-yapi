@@ -1,6 +1,7 @@
 package com.itangcent.easyapi.channel.openapi
 
 import com.itangcent.easyapi.channel.spi.ChannelConfig
+import com.itangcent.easyapi.core.config.ConfigReader
 import com.itangcent.easyapi.core.export.ApiEndpoint
 import com.itangcent.easyapi.core.export.ExportContext
 import com.itangcent.easyapi.core.export.ExportResult
@@ -8,15 +9,20 @@ import com.itangcent.easyapi.core.export.GrpcMetadata
 import com.itangcent.easyapi.core.export.GrpcStreamingType
 import com.itangcent.easyapi.core.export.HttpMethod
 import com.itangcent.easyapi.core.export.httpMetadata
+import com.itangcent.easyapi.core.psi.model.FieldModel
+import com.itangcent.easyapi.core.psi.model.ObjectModel
 import com.itangcent.easyapi.core.settings.SettingBinder
 import com.itangcent.easyapi.core.settings.update
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
+import com.itangcent.easyapi.testFramework.TestConfigReader
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
+import com.intellij.testFramework.registerServiceInstance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
@@ -222,6 +228,211 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertTrue("YAML content should embed openapi: \"3.0.3\"", metadata.content.contains("openapi: \"3.0.3\""))
     }
 
+    fun testExportMultiDocumentYamlBuildsControllerFragmentMetadata() = runTest {
+        val result = channel.export(
+            exportContext(
+                listOf(
+                    httpEndpoint(
+                        name = "List users",
+                        path = "/users",
+                        method = HttpMethod.GET,
+                        methodName = "listUsers",
+                        className = "com.example.UserController",
+                    ),
+                ),
+                OpenApiOutputFormat.YAML,
+            )
+        )
+
+        assertTrue("Multi-document YAML export should succeed, got: $result", result is ExportResult.Success)
+        val success = result as ExportResult.Success
+        val metadata = success.metadata as OpenApiExportMetadata
+        assertEquals("HTTP endpoint count should be preserved", 1, success.count)
+        assertEquals("OpenAPI", success.target)
+        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, metadata.documentMode)
+        assertEquals(1, metadata.pathFragmentCount)
+        assertEquals(0, metadata.schemaCount)
+        assertEquals(0, metadata.unresolvedPathCount)
+        assertEquals(
+            listOf("paths/UserController.yaml"),
+            metadata.additionalFiles.keys.toList(),
+        )
+        assertTrue(
+            "Root YAML should reference the controller fragment",
+            metadata.content.contains("./paths/UserController.yaml#/paths/~1users"),
+        )
+        val fragment = metadata.additionalFiles.getValue("paths/UserController.yaml")
+        assertTrue(
+            "Controller fragment should contain its source class",
+            fragment.contains("x-java-controller:") &&
+                fragment.contains("com.example.UserController"),
+        )
+        assertTrue("Controller fragment should contain the path", fragment.contains("/users:"))
+        assertNotNull(
+            "Metadata document should keep the full operation before splitting",
+            metadata.document.paths.getValue("/users").get,
+        )
+        assertNull(
+            "Metadata document should not be replaced by root references",
+            metadata.document.paths.getValue("/users").`$ref`,
+        )
+    }
+
+    fun testExportMultiDocumentYamlIncludesSharedSchemas() = runTest {
+        val responseBody = ObjectModel.Object(
+            linkedMapOf(
+                "id" to FieldModel(model = ObjectModel.single("long"), required = true),
+            )
+        )
+        val result = channel.export(
+            exportContext(
+                listOf(
+                    httpEndpoint(
+                        name = "Get user",
+                        path = "/users/{id}",
+                        method = HttpMethod.GET,
+                        methodName = "getUser",
+                        className = "com.example.UserController",
+                        responseBody = responseBody,
+                        responseType = "com.example.User",
+                    ),
+                ),
+                OpenApiOutputFormat.YAML,
+            )
+        )
+
+        assertTrue("Multi-document YAML schema export should succeed, got: $result", result is ExportResult.Success)
+        val metadata = (result as ExportResult.Success).metadata as OpenApiExportMetadata
+        assertTrue(
+            "Shared schemas document should be serialized",
+            metadata.additionalFiles.containsKey("schemas/schemas.yaml"),
+        )
+        assertEquals("One named schema should be counted", 1, metadata.schemaCount)
+        assertTrue(
+            "Controller fragment should reference the shared schemas file",
+            metadata.additionalFiles.getValue("paths/UserController.yaml")
+                .contains("../schemas/schemas.yaml#/components/schemas/User"),
+        )
+    }
+
+    fun testExportMultiDocumentJsonUsesJsonNamesAndReferences() = runTest {
+        val responseBody = ObjectModel.Object(
+            linkedMapOf("name" to FieldModel(model = ObjectModel.single("string")))
+        )
+        val result = channel.export(
+            exportContext(
+                listOf(
+                    httpEndpoint(
+                        name = "Get user",
+                        path = "/users",
+                        method = HttpMethod.GET,
+                        methodName = "getUser",
+                        className = "com.example.UserController",
+                        responseBody = responseBody,
+                        responseType = "com.example.User",
+                    ),
+                ),
+                OpenApiOutputFormat.JSON,
+            )
+        )
+
+        assertTrue("Multi-document JSON export should succeed, got: $result", result is ExportResult.Success)
+        val metadata = (result as ExportResult.Success).metadata as OpenApiExportMetadata
+        assertTrue(
+            "Every additional file should use the JSON extension: ${metadata.additionalFiles.keys}",
+            metadata.additionalFiles.keys.all { it.endsWith(".json") },
+        )
+        val serializedOutput = buildString {
+            append(metadata.content)
+            metadata.additionalFiles.values.forEach(::append)
+        }
+        assertTrue(
+            "JSON references should point to JSON documents",
+            serializedOutput.contains("./paths/UserController.json#/paths/~1users") &&
+                serializedOutput.contains("./schemas/schemas.json#/components/schemas/User") &&
+                serializedOutput.contains("../schemas/schemas.json#/components/schemas/User"),
+        )
+        assertFalse("JSON output should not contain YAML document references", serializedOutput.contains(".yaml"))
+    }
+
+    fun testExportMultiDocumentRejectsCrossControllerNormalizedPathConflict() = runTest {
+        val result = channel.export(
+            exportContext(
+                listOf(
+                    httpEndpoint(
+                        path = "/users/:id",
+                        method = HttpMethod.GET,
+                        methodName = "getUser",
+                        className = "com.example.UserController",
+                    ),
+                    httpEndpoint(
+                        path = "/users/{id}",
+                        method = HttpMethod.POST,
+                        methodName = "updateUser",
+                        className = "com.example.AdminController",
+                    ),
+                ),
+                OpenApiOutputFormat.YAML,
+            )
+        )
+
+        assertTrue("Conflicting ownership should return Error, got: $result", result is ExportResult.Error)
+        val message = (result as ExportResult.Error).message
+        assertTrue("Error should include normalized path: $message", message.contains("/users/{id}"))
+        assertTrue("Error should include GET: $message", message.contains("GET"))
+        assertTrue("Error should include POST: $message", message.contains("POST"))
+        assertTrue("Error should include UserController: $message", message.contains("UserController"))
+        assertTrue("Error should include AdminController: $message", message.contains("AdminController"))
+    }
+
+    fun testExportMultiDocumentRunsHookOnceAndPlacesRenamedPathInUnresolved() = runTest {
+        project.registerServiceInstance(
+            serviceInterface = ConfigReader::class.java,
+            instance = TestConfigReader.fromRules(
+                project,
+                "openapi.format.after" to
+                    """groovy:if (document.paths.containsKey("/users")) { def item = document.paths.remove("/users"); document.paths.put("/hooked", item) } else { document.paths.put("/hook-fired-twice", document.paths.get("/hooked")) }""",
+            ),
+        )
+        val result = channel.export(
+            exportContext(
+                listOf(
+                    httpEndpoint(
+                        path = "/users",
+                        method = HttpMethod.GET,
+                        methodName = "listUsers",
+                        className = "com.example.UserController",
+                    ),
+                ),
+                OpenApiOutputFormat.YAML,
+            )
+        )
+
+        assertTrue("Hooked multi-document export should succeed, got: $result", result is ExportResult.Success)
+        val metadata = (result as ExportResult.Success).metadata as OpenApiExportMetadata
+        assertEquals(1, metadata.unresolvedPathCount)
+        assertTrue(
+            "Renamed path should be emitted in Unresolved fragment",
+            metadata.additionalFiles.containsKey("paths/Unresolved.yaml"),
+        )
+        assertTrue(
+            "Warning should identify the hook-renamed path: ${metadata.warnings}",
+            metadata.warnings.any { it.contains("/hooked") },
+        )
+        assertEquals(
+            "Hook should run exactly once",
+            setOf("/hooked"),
+            metadata.document.paths.keys,
+        )
+        val fullPathItem = metadata.document.paths.getValue("/hooked")
+        assertNotNull("Metadata document should retain the complete GET operation", fullPathItem.get)
+        assertNull("Metadata document should not contain split root refs", fullPathItem.`$ref`)
+        assertTrue(
+            "Root document should reference Unresolved fragment",
+            metadata.content.contains("./paths/Unresolved.yaml#/paths/~1hooked"),
+        )
+    }
+
     // ─── Settings fallback for outputFormat ───────────────────────
 
     fun testExportUsesSettingsOutputFormatWhenNoTypedConfig() = runTest {
@@ -409,16 +620,40 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         path: String,
         method: HttpMethod,
         methodName: String,
+        className: String? = null,
+        folder: String? = null,
+        responseBody: ObjectModel? = null,
+        responseType: String? = null,
     ): ApiEndpoint {
         val psiMethod = mock<PsiMethod> {
             on { this.name } doReturn methodName
         }
         return ApiEndpoint(
             name = name,
-            metadata = httpMetadata(path = path, method = method),
+            folder = folder,
+            metadata = httpMetadata(
+                path = path,
+                method = method,
+                responseBody = responseBody,
+                responseType = responseType,
+            ),
             sourceMethod = psiMethod,
+            className = className,
         )
     }
+
+    private fun exportContext(
+        endpoints: List<ApiEndpoint>,
+        outputFormat: OpenApiOutputFormat,
+    ): ExportContext = ExportContext(
+        project = project,
+        endpoints = endpoints,
+        channelId = "openapi",
+        channelConfig = OpenApiConfig(
+            outputFormat = outputFormat,
+            documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
+        ),
+    )
 
     private fun grpcEndpoint(): ApiEndpoint = ApiEndpoint(
         name = "SayHello",
