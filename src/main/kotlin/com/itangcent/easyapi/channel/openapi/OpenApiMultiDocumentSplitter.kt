@@ -90,8 +90,7 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         val pathsByOwner = linkedMapOf<DocumentOwner, LinkedHashMap<String, PathItemObject>>()
 
         for ((path, pathItem) in document.paths) {
-            val normalizedPath = PathNormalizer.normalize(path)
-            val knownOwner = normalizedPath?.let(ownersByPath::get)
+            val knownOwner = ownersByPath[path]
             val owner = knownOwner ?: DocumentOwner.Unresolved
             ownerByDocumentPath[path] = owner
             pathsByOwner.getOrPut(owner) { linkedMapOf() }[path] = pathItem
