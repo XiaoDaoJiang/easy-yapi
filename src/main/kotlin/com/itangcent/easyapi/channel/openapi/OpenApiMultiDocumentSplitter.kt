@@ -6,6 +6,7 @@ import com.google.gson.annotations.SerializedName
 import com.itangcent.easyapi.core.export.ApiEndpoint
 import com.itangcent.easyapi.core.export.HttpMethod
 import com.itangcent.easyapi.core.export.httpMetadata
+import java.net.URI
 import java.security.MessageDigest
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -37,9 +38,8 @@ internal data class OpenApiMultiDocument(
 )
 
 /**
- * Validates that every normalized OpenAPI path belongs to one document owner.
- *
- * Actual document splitting is intentionally handled separately.
+ * Validates normalized path ownership and splits a formatted OpenAPI document
+ * into owner-specific path fragments plus an optional schemas document.
  *
  * @param endpoints endpoints whose normalized HTTP paths are validated
  * @throws IllegalArgumentException when multiple owners claim the same path
@@ -142,8 +142,10 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         val rootPaths = linkedMapOf<String, PathItemObject>()
         for (path in document.paths.keys) {
             val owner = ownerByDocumentPath.getValue(path)
+            val fileName = "${stems.getValue(owner)}.$extension"
+            val fragment = encodeUriFragment("/paths/${escapePointerToken(path)}")
             rootPaths[path] = PathItemObject(
-                `$ref` = "./paths/${stems.getValue(owner)}.$extension#/paths/${escapePointerToken(path)}",
+                `$ref` = "./paths/${encodeUriPathSegment(fileName)}#$fragment",
             )
         }
 
@@ -151,7 +153,8 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
             ComponentsObject(
                 schemas = schemas!!.mapValuesTo(linkedMapOf()) { (name, _) ->
                     SchemaObject(
-                        `$ref` = "./$schemaFile#/components/schemas/${escapePointerToken(name)}",
+                        `$ref` = "./$schemaFile#" +
+                            encodeUriFragment("/components/schemas/${escapePointerToken(name)}"),
                     )
                 },
             )
@@ -270,6 +273,12 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
     private fun escapePointerToken(value: String): String =
         value.replace("~", "~0").replace("/", "~1")
 
+    private fun encodeUriPathSegment(value: String): String =
+        URI(null, null, value, null).toASCIIString()
+
+    private fun encodeUriFragment(value: String): String =
+        URI(null, null, null, value).toASCIIString().removePrefix("#")
+
     private fun rewritePathItem(pathItem: PathItemObject, schemaBase: String): PathItemObject =
         pathItem.copy(
             get = pathItem.get?.let { rewriteOperation(it, schemaBase) },
@@ -310,7 +319,7 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         val ref = schema.`$ref`
         return schema.copy(
             `$ref` = if (ref?.startsWith(INTERNAL_SCHEMA_PREFIX) == true) {
-                "$schemaBase$ref"
+                "$schemaBase#${encodeUriFragment(ref.removePrefix("#"))}"
             } else {
                 ref
             },

@@ -9,10 +9,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.net.URI
 
 class OpenApiMultiDocumentSplitterTest {
 
@@ -136,7 +136,7 @@ class OpenApiMultiDocumentSplitterTest {
         assertEquals("Controller metadata should be emitted", "com.acme.UserController", users.javaController)
         assertNull("Controller fragment should not have folder metadata", users.easyApiFolder)
         assertNull("Controller fragment should not be unresolved", users.easyApiUnresolved)
-        assertSame(
+        assertEquals(
             "Path operation should be preserved",
             document.paths.getValue("/users").get,
             users.paths.getValue("/users").get,
@@ -164,7 +164,7 @@ class OpenApiMultiDocumentSplitterTest {
 
         assertEquals(
             "JSON output should use JSON for files and escaped path pointers",
-            "./paths/UserController.json#/paths/~1users~1~0draft~1{id}",
+            "./paths/UserController.json#/paths/~1users~1~0draft~1%7Bid%7D",
             result.rootDocument.paths.getValue(path).`$ref`,
         )
         assertTrue(
@@ -175,6 +175,93 @@ class OpenApiMultiDocumentSplitterTest {
             "JSON root schema refs should target the JSON schema document",
             "./schemas/schemas.json#/components/schemas/User",
             result.rootDocument.components!!.schemas!!.getValue("User").`$ref`,
+        )
+    }
+
+    @Test
+    fun testEncodesFolderFilenameAndPathPointerAsUriReference() {
+        val folder = "患者 API#100%"
+        val path = "/patients/{id}"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint(path, HttpMethod.GET, null, folder)),
+        ).split(
+            document(linkedMapOf(path to pathItem(HttpMethod.GET, "getPatient"))),
+            OpenApiOutputFormat.YAML,
+        )
+
+        assertTrue(
+            "Actual additional document key should keep the readable filename",
+            "paths/$folder.yaml" in result.additionalDocuments,
+        )
+        val ref = result.rootDocument.paths.getValue(path).`$ref`!!
+        assertEquals(
+            "Reference should encode only its URI path segment and fragment",
+            "./paths/%E6%82%A3%E8%80%85%20API%23100%25.yaml#/paths/~1patients~1%7Bid%7D",
+            ref,
+        )
+        assertEquals("Reference should be a strict ASCII URI", ref, URI.create(ref).toASCIIString())
+    }
+
+    @Test
+    fun testEncodesSpecialSchemaNamesAndRewrittenInternalSchemaRefs() {
+        val specialSchemaName = "用户 Profile#%/~"
+        val referencedSchemaName = "User Profile"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint("/users", HttpMethod.GET, "com.acme.UserController")),
+        ).split(
+            document(
+                linkedMapOf(
+                    "/users" to PathItemObject(
+                        get = OperationObject(
+                            operationId = "getUsers",
+                            responses = linkedMapOf(
+                                "200" to ResponseObject(
+                                    description = "OK",
+                                    content = linkedMapOf(
+                                        "application/json" to MediaTypeObject(
+                                            SchemaObject(
+                                                `$ref` = "#/components/schemas/$referencedSchemaName",
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                ComponentsObject(
+                    linkedMapOf(
+                        specialSchemaName to SchemaObject(type = "object"),
+                        referencedSchemaName to SchemaObject(type = "object"),
+                    ),
+                ),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        val rootRef = result.rootDocument.components!!.schemas!!
+            .getValue(specialSchemaName).`$ref`!!
+        assertEquals(
+            "Root schema ref should combine JSON Pointer and URI fragment escaping",
+            "./schemas/schemas.yaml#/components/schemas/" +
+                "%E7%94%A8%E6%88%B7%20Profile%23%25~1~0",
+            rootRef,
+        )
+        assertEquals("Root schema ref should be a strict ASCII URI", rootRef, URI.create(rootRef).toASCIIString())
+
+        val fragment = result.additionalDocuments.getValue("paths/UserController.yaml") as OpenApiPathsFragment
+        val rewrittenRef = fragment.paths.getValue("/users").get!!
+            .responses.getValue("200").content!!
+            .getValue("application/json").schema.`$ref`!!
+        assertEquals(
+            "Rewritten internal schema ref should URI-encode its fragment",
+            "../schemas/schemas.yaml#/components/schemas/User%20Profile",
+            rewrittenRef,
+        )
+        assertEquals(
+            "Rewritten schema ref should be a strict ASCII URI",
+            rewrittenRef,
+            URI.create(rewrittenRef).toASCIIString(),
         )
     }
 
