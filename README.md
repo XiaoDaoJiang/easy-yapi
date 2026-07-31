@@ -145,9 +145,10 @@ for the full rule surface and a Spring-equivalent reference ruleset.
 For OpenAPI, choose **Single file** (default) or **Multiple files by Controller**.
 Multi-document export writes `openapi.*` directly to the selected directory,
 one `paths/*` fragment per Controller, and `schemas/schemas.*` when reusable
-schemas exist. All `$ref` values are relative to that directory. Conflicting
-paths fail before writing; unresolved paths use an `Unresolved` fragment, and
-existing target files require one overwrite confirmation.
+schemas exist. Cross-file `$ref` values use relative paths between the generated
+documents. Conflicting paths fail before writing; unresolved paths use an
+`Unresolved` fragment, and existing target files require one overwrite
+confirmation.
 
 ### Call an API
 
