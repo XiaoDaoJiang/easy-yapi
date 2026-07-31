@@ -1,6 +1,8 @@
 package com.itangcent.easyapi.channel.openapi
 
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
+import java.awt.Container
+import javax.swing.AbstractButton
 import kotlin.reflect.full.memberProperties
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -9,7 +11,9 @@ import org.junit.Assert.assertTrue
 /**
  * Round-trip tests for [OpenApiOptionsPanel].
  *
- * The panel exposes a two-way format selector (`JSON` default / `YAML`).
+ * The panel exposes a two-way format selector (`JSON` default / `YAML`) and a
+ * two-way document selector (`Single file` default /
+ * `Multiple files by Controller`).
  * The "Always Ask" option is NOT exposed in the per-export panel — the panel
  * itself IS the per-export prompt, so "Always Ask" would be redundant (it
  * would just trigger a second `Messages.showChooseDialog` inside `export()`).
@@ -53,14 +57,32 @@ class OpenApiOptionsPanelTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertEquals(OpenApiOutputFormat.JSON, config.outputFormat)
     }
 
-    fun testBuildConfigReturnsOnlyOutputFormatProperty() {
+    fun testDefaultBuildConfigReturnsSingleFileMode() {
+        val config = panel.buildConfig() as OpenApiConfig
+        assertEquals(OpenApiDocumentMode.SINGLE_FILE, config.documentMode)
+    }
+
+    fun testDocumentModeOptionsHaveExpectedLabels() {
+        val buttonLabels = panel.component
+            .descendants()
+            .filterIsInstance<AbstractButton>()
+            .map { it.text }
+            .toSet()
+        assertTrue("Single file option should be visible", "Single file" in buttonLabels)
+        assertTrue(
+            "Multiple files by Controller option should be visible",
+            "Multiple files by Controller" in buttonLabels,
+        )
+    }
+
+    fun testBuildConfigReturnsFormatAndDocumentModeProperties() {
         // The v1 envelope fields (infoTitle / infoVersion / infoDescription /
         // serverUrl) were removed. Reflection-level guard so
         // accidental re-introduction is caught by this test.
-        val propertyNames = OpenApiConfig::class.memberProperties.map { it.name }
+        val propertyNames = OpenApiConfig::class.memberProperties.map { it.name }.toSet()
         assertEquals(
-            "OpenApiConfig should have only the outputFormat property, got: $propertyNames",
-            listOf("outputFormat"),
+            "OpenApiConfig should have format and document mode properties, got: $propertyNames",
+            setOf("outputFormat", "documentMode"),
             propertyNames,
         )
     }
@@ -78,6 +100,25 @@ class OpenApiOptionsPanelTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertEquals(OpenApiOutputFormat.YAML, config.outputFormat)
     }
 
+    fun testBuildConfigMultiFileModeWhenSet() {
+        panel.setDocumentMode(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER)
+
+        val config = panel.buildConfig() as OpenApiConfig
+
+        assertEquals(OpenApiOutputFormat.JSON, config.outputFormat)
+        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, config.documentMode)
+    }
+
+    fun testSetDocumentModePreservesFormatSelection() {
+        panel.setFormat(OpenApiOutputFormat.YAML)
+        panel.setDocumentMode(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER)
+
+        val config = panel.buildConfig() as OpenApiConfig
+
+        assertEquals(OpenApiOutputFormat.YAML, config.outputFormat)
+        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, config.documentMode)
+    }
+
     fun testBuildConfigAlwaysAskFallsBackToJson() {
         // The panel has no "Always Ask" radio. When applyConfig receives an
         // ALWAYS_ASK config (only reachable from OpenApiSettings), the panel
@@ -91,12 +132,16 @@ class OpenApiOptionsPanelTest : EasyApiLightCodeInsightFixtureTestCase() {
         )
     }
 
-    fun testApplyConfigPopulatesRadiosFromConfig() {
-        val cfg = OpenApiConfig(outputFormat = OpenApiOutputFormat.YAML)
+    fun testApplyConfigPopulatesBothRadioGroupsFromConfig() {
+        val cfg = OpenApiConfig(
+            outputFormat = OpenApiOutputFormat.YAML,
+            documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
+        )
         panel.applyConfig(cfg)
 
         val built = panel.buildConfig() as OpenApiConfig
         assertEquals(OpenApiOutputFormat.YAML, built.outputFormat)
+        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, built.documentMode)
     }
 
     fun testApplyConfigWithDefaultsSelectsJson() {
@@ -138,9 +183,30 @@ class OpenApiOptionsPanelTest : EasyApiLightCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testRoundTripBothDocumentModes() {
+        for (documentMode in OpenApiDocumentMode.values()) {
+            panel.setDocumentMode(documentMode)
+            val config = panel.buildConfig() as OpenApiConfig
+            assertEquals(documentMode, config.documentMode)
+
+            val freshPanel = OpenApiOptionsPanel(project)
+            freshPanel.applyConfig(config)
+            assertEquals(documentMode, (freshPanel.buildConfig() as OpenApiConfig).documentMode)
+        }
+    }
+
     fun testOnShownDoesNotThrow() {
         // The SPI default is a no-op; the panel may override it to initialize
         // defaults. Either way, it should not throw.
         panel.onShown()
+    }
+
+    private fun Container.descendants(): Sequence<java.awt.Component> = sequence {
+        components.forEach { child ->
+            yield(child)
+            if (child is Container) {
+                yieldAll(child.descendants())
+            }
+        }
     }
 }
