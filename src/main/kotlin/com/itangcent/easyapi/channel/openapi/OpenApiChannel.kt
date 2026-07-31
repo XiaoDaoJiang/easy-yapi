@@ -398,9 +398,7 @@ class OpenApiChannel : Channel, IdeaLog {
         metadata: OpenApiExportMetadata,
     ): Boolean {
         val rootDirectory = resolveTargetDirectory(project, config)
-        val canonicalRoot = background { resolveFutureRealPath(rootDirectory) }
-        val directoryMutex = MULTI_DOCUMENT_DIRECTORY_LOCKS.computeIfAbsent(canonicalRoot) { Mutex() }
-        directoryMutex.withLock {
+        withMultiDocumentDirectoryLock(rootDirectory) {
             val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
             val existingCount = background { targets.keys.count(Files::exists) }
             if (existingCount > 0) {
@@ -446,6 +444,15 @@ class OpenApiChannel : Channel, IdeaLog {
             }
         }
         return true
+    }
+
+    internal suspend fun <T> withMultiDocumentDirectoryLock(
+        rootDirectory: Path,
+        block: suspend () -> T,
+    ): T {
+        val canonicalRoot = background { resolveFutureRealPath(rootDirectory) }
+        val directoryMutex = MULTI_DOCUMENT_DIRECTORY_LOCKS.computeIfAbsent(canonicalRoot) { Mutex() }
+        return directoryMutex.withLock { block() }
     }
 
     /** @requires EDT when the configured output directory is absent. */
