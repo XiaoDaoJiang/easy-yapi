@@ -143,7 +143,7 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         for (path in document.paths.keys) {
             val owner = ownerByDocumentPath.getValue(path)
             val fileName = "${stems.getValue(owner)}.$extension"
-            val fragment = encodeUriFragment("/paths/${escapePointerToken(path)}")
+            val fragment = encodeRawUriFragment("/paths/${escapePointerToken(path)}")
             rootPaths[path] = PathItemObject(
                 `$ref` = "./paths/${encodeUriPathSegment(fileName)}#$fragment",
             )
@@ -154,7 +154,7 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
                 schemas = schemas!!.mapValuesTo(linkedMapOf()) { (name, _) ->
                     SchemaObject(
                         `$ref` = "./$schemaFile#" +
-                            encodeUriFragment("/components/schemas/${escapePointerToken(name)}"),
+                            encodeRawUriFragment("/components/schemas/${escapePointerToken(name)}"),
                     )
                 },
             )
@@ -247,13 +247,34 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
     }
 
     private fun sanitizeStem(rawStem: String): String {
-        var stem = INVALID_WINDOWS_CHARS.replace(rawStem, "-").trimEnd(' ', '.')
+        var stem = replaceUnpairedSurrogates(rawStem)
+        stem = INVALID_WINDOWS_CHARS.replace(stem, "-").trimEnd(' ', '.')
         if (stem.isEmpty()) stem = "Unresolved"
         if (RESERVED_WINDOWS_NAMES.matches(stem)) stem = "_$stem"
         if (stem.toByteArray(Charsets.UTF_8).size > MAX_STEM_UTF8_BYTES) {
             stem = withSuffix(stem, stableHash(rawStem))
         }
         return stem
+    }
+
+    private fun replaceUnpairedSurrogates(value: String): String {
+        val result = StringBuilder(value.length)
+        var index = 0
+        while (index < value.length) {
+            val char = value[index]
+            if (
+                Character.isHighSurrogate(char) &&
+                index + 1 < value.length &&
+                Character.isLowSurrogate(value[index + 1])
+            ) {
+                result.append(char).append(value[index + 1])
+                index += 2
+            } else {
+                result.append(if (Character.isSurrogate(char)) '-' else char)
+                index++
+            }
+        }
+        return result.toString()
     }
 
     private fun withSuffix(stem: String, suffix: String): String {
@@ -291,7 +312,10 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
     private fun encodeUriPathSegment(value: String): String =
         URI(null, null, value, null).toASCIIString()
 
-    private fun encodeUriFragment(value: String): String {
+    private fun encodeRawUriFragment(value: String): String =
+        URI(null, null, null, value).toASCIIString().removePrefix("#")
+
+    private fun encodeExistingUriFragment(value: String): String {
         return try {
             URI.create("#$value").toASCIIString().removePrefix("#")
         } catch (_: IllegalArgumentException) {
@@ -374,7 +398,7 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         val ref = schema.`$ref`
         return schema.copy(
             `$ref` = if (ref?.startsWith(INTERNAL_SCHEMA_PREFIX) == true) {
-                "$schemaBase#${encodeUriFragment(ref.removePrefix("#"))}"
+                "$schemaBase#${encodeExistingUriFragment(ref.removePrefix("#"))}"
             } else {
                 ref
             },
