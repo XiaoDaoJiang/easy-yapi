@@ -258,6 +258,63 @@ class OpenApiMultiDocumentSplitterTest {
     }
 
     @Test
+    fun testKeepsHookPathVariantUnresolvedInsteadOfInheritingNormalizedOwner() {
+        val hookPath = "/users/:id"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint("/users/{id}", HttpMethod.GET, "com.acme.UserController")),
+        ).split(
+            document(linkedMapOf(hookPath to pathItem(HttpMethod.GET, "hookUser"))),
+            OpenApiOutputFormat.YAML,
+        )
+
+        assertEquals(
+            "Hook path should reference the Unresolved fragment",
+            "./paths/Unresolved.yaml#/paths/~1users~1:id",
+            result.rootDocument.paths.getValue(hookPath).`$ref`,
+        )
+        val unresolved = result.additionalDocuments.getValue("paths/Unresolved.yaml") as OpenApiPathsFragment
+        assertTrue("Unresolved fragment should contain the exact hook path", hookPath in unresolved.paths)
+        assertEquals("Hook path should increment unresolved count", 1, result.unresolvedPathCount)
+        assertTrue(
+            "Hook path should produce an ownership warning",
+            result.warnings.any { it.contains(hookPath) && it.contains("owner", ignoreCase = true) },
+        )
+    }
+
+    @Test
+    fun testGroupsDifferentPathsFromSameControllerIntoOneFragment() {
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(
+                endpoint("/users", HttpMethod.GET, "com.acme.UserController"),
+                endpoint("/users/{id}", HttpMethod.GET, "com.acme.UserController"),
+            ),
+        ).split(
+            document(
+                linkedMapOf(
+                    "/users" to pathItem(HttpMethod.GET, "getUsers"),
+                    "/users/{id}" to pathItem(HttpMethod.GET, "getUser"),
+                ),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        assertEquals("One controller should produce one fragment", 1, result.pathFragmentCount)
+        assertEquals(
+            "Both root paths should reference the same controller file",
+            setOf("./paths/UserController.yaml"),
+            result.rootDocument.paths.values
+                .map { it.`$ref`!!.substringBefore("#") }
+                .toSet(),
+        )
+        val fragment = result.additionalDocuments.getValue("paths/UserController.yaml") as OpenApiPathsFragment
+        assertEquals(
+            "Controller fragment should contain both paths",
+            listOf("/users", "/users/{id}"),
+            fragment.paths.keys.toList(),
+        )
+    }
+
+    @Test
     fun testSanitizesWindowsNamesAndResolvesCaseAndCleaningCollisions() {
         val longFolder = "x".repeat(160)
         val endpoints = listOf(
