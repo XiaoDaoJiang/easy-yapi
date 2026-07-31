@@ -27,7 +27,7 @@ Export API endpoints from your source code to multiple formats:
 | cURL | ✓ | ✓ | Executable shell command |
 | HTTP Client | ✓ | ✓ | IntelliJ HTTP Client scratch file |
 | **Hoppscotch** *(Beta)* | ✓ | — | JSON file or direct upload to Hoppscotch |
-| **OpenAPI** *(Beta)* | ✓ | ✓ | `.json` or `.yaml` OpenAPI 3.0.3 document |
+| **OpenAPI** *(Beta)* | ✓ | ✓ | Single `.json` / `.yaml` OpenAPI 3.0.3 file or Controller-grouped multi-document directory |
 
 ### API Dashboard
 
@@ -141,6 +141,13 @@ for the full rule surface and a Spring-equivalent reference ruleset.
 2. Select **EasyApi → Export** (or press `Ctrl+E` on macOS / `Alt+Shift+E`)
 3. Choose the target format (YApi / Postman / Hoppscotch *(Beta)* / Markdown / cURL / HTTP Client / OpenAPI *(Beta)*)
 4. The APIs will be exported automatically
+
+For OpenAPI, choose **Single file** (default) or **Multiple files by Controller**.
+Multi-document export writes `openapi.*` directly to the selected directory,
+one `paths/*` fragment per Controller, and `schemas/schemas.*` when reusable
+schemas exist. All `$ref` values are relative to that directory. Conflicting
+paths fail before writing; unresolved paths use an `Unresolved` fragment, and
+existing target files require one overwrite confirmation.
 
 ### Call an API
 
