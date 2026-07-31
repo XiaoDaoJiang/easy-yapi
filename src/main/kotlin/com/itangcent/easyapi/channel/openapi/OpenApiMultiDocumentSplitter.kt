@@ -250,16 +250,31 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
         var stem = INVALID_WINDOWS_CHARS.replace(rawStem, "-").trimEnd(' ', '.')
         if (stem.isEmpty()) stem = "Unresolved"
         if (RESERVED_WINDOWS_NAMES.matches(stem)) stem = "_$stem"
-        if (stem.length > MAX_STEM_LENGTH) {
-            stem = withSuffix(stem.take(MAX_STEM_LENGTH), stableHash(rawStem))
+        if (stem.toByteArray(Charsets.UTF_8).size > MAX_STEM_UTF8_BYTES) {
+            stem = withSuffix(stem, stableHash(rawStem))
         }
         return stem
     }
 
     private fun withSuffix(stem: String, suffix: String): String {
-        val prefixLength = MAX_STEM_LENGTH - suffix.length - 1
-        val prefix = stem.take(prefixLength).trimEnd(' ', '.').ifEmpty { "_" }
+        val prefixBytes = MAX_STEM_UTF8_BYTES - suffix.toByteArray(Charsets.UTF_8).size - 1
+        val prefix = takeUtf8Bytes(stem, prefixBytes).trimEnd(' ', '.').ifEmpty { "_" }
         return "$prefix-$suffix"
+    }
+
+    private fun takeUtf8Bytes(value: String, maxBytes: Int): String {
+        val result = StringBuilder()
+        var index = 0
+        var usedBytes = 0
+        while (index < value.length) {
+            val codePoint = value.codePointAt(index)
+            val encoded = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8)
+            if (usedBytes + encoded.size > maxBytes) break
+            result.appendCodePoint(codePoint)
+            usedBytes += encoded.size
+            index += Character.charCount(codePoint)
+        }
+        return result.toString()
     }
 
     private fun stableHash(value: String): String =
@@ -276,8 +291,48 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
     private fun encodeUriPathSegment(value: String): String =
         URI(null, null, value, null).toASCIIString()
 
-    private fun encodeUriFragment(value: String): String =
-        URI(null, null, null, value).toASCIIString().removePrefix("#")
+    private fun encodeUriFragment(value: String): String {
+        return try {
+            URI.create("#$value").toASCIIString().removePrefix("#")
+        } catch (_: IllegalArgumentException) {
+            encodeInvalidUriFragment(value)
+        }
+    }
+
+    private fun encodeInvalidUriFragment(value: String): String {
+        val result = StringBuilder()
+        var index = 0
+        while (index < value.length) {
+            if (
+                value[index] == '%' &&
+                index + 2 < value.length &&
+                value[index + 1].isHexDigit() &&
+                value[index + 2].isHexDigit()
+            ) {
+                result.append(value, index, index + 3)
+                index += 3
+                continue
+            }
+
+            val codePoint = value.codePointAt(index)
+            if (codePoint < 128 && RFC_3986_FRAGMENT_CHARS.contains(codePoint.toChar())) {
+                result.appendCodePoint(codePoint)
+            } else {
+                String(Character.toChars(codePoint))
+                    .toByteArray(Charsets.UTF_8)
+                    .forEach { byte ->
+                        result.append('%')
+                        result.append(HEX[(byte.toInt() ushr 4) and 0xf])
+                        result.append(HEX[byte.toInt() and 0xf])
+                    }
+            }
+            index += Character.charCount(codePoint)
+        }
+        return result.toString()
+    }
+
+    private fun Char.isHexDigit(): Boolean =
+        this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
 
     private fun rewritePathItem(pathItem: PathItemObject, schemaBase: String): PathItemObject =
         pathItem.copy(
@@ -364,7 +419,10 @@ class OpenApiMultiDocumentSplitter(endpoints: List<ApiEndpoint>) {
 
     private companion object {
         const val INTERNAL_SCHEMA_PREFIX = "#/components/schemas/"
-        const val MAX_STEM_LENGTH = 120
+        const val MAX_STEM_UTF8_BYTES = 120
+        const val RFC_3986_FRAGMENT_CHARS =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@/?"
+        const val HEX = "0123456789ABCDEF"
         val INVALID_WINDOWS_CHARS = Regex("""[<>:"/\\|?*\u0000-\u001f]""")
         val RESERVED_WINDOWS_NAMES =
             Regex("""(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$""")
