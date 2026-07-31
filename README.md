@@ -146,9 +146,10 @@ For OpenAPI, choose **Single file** (default) or **Multiple files by Controller*
 Multi-document export writes `openapi.*` directly to the selected directory,
 one `paths/*` fragment per Controller, and `schemas/schemas.*` when reusable
 schemas exist. Cross-file `$ref` values use relative paths between the generated
-documents. Conflicting paths fail before writing; unresolved paths use an
-`Unresolved` fragment, and existing target files require one overwrite
-confirmation.
+documents. Export stops before writing when the same normalized path belongs to
+multiple owners. Without Controller metadata, ownership falls back to the
+folder, then to an `Unresolved` fragment. Existing target files require one
+overwrite confirmation.
 
 ### Call an API
 
