@@ -18,6 +18,9 @@ import com.itangcent.easyapi.core.logging.IdeaLog
  */
 enum class OpenApiOutputFormat { JSON, YAML, ALWAYS_ASK }
 
+/** Physical layout used for an exported OpenAPI document. */
+enum class OpenApiDocumentMode { SINGLE_FILE, MULTI_FILE_BY_CONTROLLER }
+
 /**
  * Per-export configuration for the OpenAPI channel.
  *
@@ -32,12 +35,12 @@ enum class OpenApiOutputFormat { JSON, YAML, ALWAYS_ASK }
  * carries rule-resolved envelope metadata in an internal [OpenApiEnvelope]
  * between channel and formatter.
  *
- * `outputFormat` is the only field here — it is consumed by
- * `OpenApiChannel.export` to pick the serializer. `OpenApiFormatter` does not
- * read it.
+ * `outputFormat` selects the serializer, while `documentMode` selects the
+ * physical file layout. `OpenApiFormatter` does not read either option.
  */
 data class OpenApiConfig(
     val outputFormat: OpenApiOutputFormat = OpenApiOutputFormat.ALWAYS_ASK,
+    val documentMode: OpenApiDocumentMode = OpenApiDocumentMode.SINGLE_FILE,
 ) : ChannelConfig() {
 
     companion object : IdeaLog {
