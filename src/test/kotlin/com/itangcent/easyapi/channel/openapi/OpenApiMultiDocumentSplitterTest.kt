@@ -179,6 +179,36 @@ class OpenApiMultiDocumentSplitterTest {
     }
 
     @Test
+    fun testEncodesLiteralPercentTripletsInRawPathAndSchemaKeys() {
+        val path = "/files/%2F"
+        val schemaName = "Rate%20Plan"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint(path, HttpMethod.GET, "com.acme.UserController")),
+        ).split(
+            document(
+                linkedMapOf(path to pathItem(HttpMethod.GET, "getFile")),
+                ComponentsObject(linkedMapOf(schemaName to SchemaObject(type = "object"))),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        val pathRef = result.rootDocument.paths.getValue(path).`$ref`!!
+        val schemaRef = result.rootDocument.components!!.schemas!!.getValue(schemaName).`$ref`!!
+        assertEquals(
+            "A raw path key should treat a percent triplet as literal text",
+            "./paths/UserController.yaml#/paths/~1files~1%252F",
+            pathRef,
+        )
+        assertEquals(
+            "A raw schema key should treat a percent triplet as literal text",
+            "./schemas/schemas.yaml#/components/schemas/Rate%2520Plan",
+            schemaRef,
+        )
+        assertEquals("Raw path reference should be a strict ASCII URI", pathRef, URI.create(pathRef).toASCIIString())
+        assertEquals("Raw schema reference should be a strict ASCII URI", schemaRef, URI.create(schemaRef).toASCIIString())
+    }
+
+    @Test
     fun testEncodesFolderFilenameAndPathPointerAsUriReference() {
         val folder = "患者 API#100%"
         val path = "/patients/{id}"
@@ -560,6 +590,55 @@ class OpenApiMultiDocumentSplitterTest {
         )
         val ref = first.rootDocument.paths.getValue("/unicode").`$ref`!!
         assertEquals("Reference using the bounded filename should be a valid URI", ref, URI.create(ref).toASCIIString())
+    }
+
+    @Test
+    fun testDoesNotSplitEmojiWhenFilenameCrossesUtf8Budget() {
+        val longFolder = "a".repeat(111) + "😀" + "b".repeat(20)
+        val path = "/emoji"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint(path, HttpMethod.GET, null, longFolder)),
+        ).split(
+            document(linkedMapOf(path to pathItem(HttpMethod.GET, "emoji"))),
+            OpenApiOutputFormat.YAML,
+        )
+        val stem = result.additionalDocuments.keys.single()
+            .removePrefix("paths/")
+            .removeSuffix(".yaml")
+
+        assertTrue("The complete ASCII prefix should fit", stem.startsWith("a".repeat(111)))
+        assertFalse("An emoji that crosses the byte budget must be omitted whole", stem.contains("😀"))
+        assertEquals(
+            "The bounded stem must contain only complete Unicode code points",
+            stem,
+            stem.toByteArray(Charsets.UTF_8).toString(Charsets.UTF_8),
+        )
+        assertTrue("Filename stem must remain within 120 UTF-8 bytes", stem.toByteArray(Charsets.UTF_8).size <= 120)
+    }
+
+    @Test
+    fun testReplacesUnpairedSurrogatesBeforeBuildingFilenameAndReference() {
+        val folder = "Bad\uD83DName\uDC00"
+        val path = "/surrogate"
+        val result = OpenApiMultiDocumentSplitter(
+            listOf(endpoint(path, HttpMethod.GET, null, folder)),
+        ).split(
+            document(linkedMapOf(path to pathItem(HttpMethod.GET, "surrogate"))),
+            OpenApiOutputFormat.YAML,
+        )
+
+        assertEquals(
+            "Unpaired surrogates should be replaced in the physical filename",
+            setOf("paths/Bad-Name-.yaml"),
+            result.additionalDocuments.keys,
+        )
+        val ref = result.rootDocument.paths.getValue(path).`$ref`!!
+        assertEquals(
+            "Root reference must use the same sanitized filename",
+            "./paths/Bad-Name-.yaml#/paths/~1surrogate",
+            ref,
+        )
+        assertEquals("Sanitized reference should be a strict ASCII URI", ref, URI.create(ref).toASCIIString())
     }
 
     @Test
