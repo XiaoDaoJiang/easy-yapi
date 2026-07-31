@@ -21,11 +21,13 @@ import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
 import com.intellij.testFramework.registerServiceInstance
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -802,6 +804,135 @@ class OpenApiChannelTest : EasyApiLightCodeInsightFixtureTestCase() {
         } finally {
             firstDir.toFile().deleteRecursively()
             secondDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testMultiDocumentDirectoryLockSerializesSameDirectory() = runTest {
+        val directory = Files.createTempDirectory("openapi-lock-same")
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val secondEntered = CompletableDeferred<Unit>()
+        try {
+            coroutineScope {
+                val first = async {
+                    channel.withMultiDocumentDirectoryLock(directory) {
+                        firstEntered.complete(Unit)
+                        releaseFirst.await()
+                    }
+                }
+                withTimeout(5_000) { firstEntered.await() }
+                val second = async {
+                    secondStarted.complete(Unit)
+                    channel.withMultiDocumentDirectoryLock(directory) {
+                        secondEntered.complete(Unit)
+                    }
+                }
+                withTimeout(5_000) { secondStarted.await() }
+
+                try {
+                    assertNull(
+                        "Second block must not enter while the same directory lock is held",
+                        withTimeoutOrNull(500) { secondEntered.await() },
+                    )
+                } finally {
+                    releaseFirst.complete(Unit)
+                }
+                withTimeout(5_000) {
+                    secondEntered.await()
+                    awaitAll(first, second)
+                }
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    fun testMultiDocumentDirectoryLockDoesNotBlockDifferentDirectory() = runTest {
+        val firstDirectory = Files.createTempDirectory("openapi-lock-first")
+        val secondDirectory = Files.createTempDirectory("openapi-lock-second")
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        try {
+            coroutineScope {
+                val first = async {
+                    channel.withMultiDocumentDirectoryLock(firstDirectory) {
+                        firstEntered.complete(Unit)
+                        releaseFirst.await()
+                    }
+                }
+                withTimeout(5_000) { firstEntered.await() }
+
+                val secondCompleted = try {
+                    withTimeoutOrNull(2_000) {
+                        channel.withMultiDocumentDirectoryLock(secondDirectory) { true }
+                    }
+                } finally {
+                    releaseFirst.complete(Unit)
+                }
+                assertEquals(
+                    "A different directory must complete before the first directory lock is released",
+                    true,
+                    secondCompleted,
+                )
+                withTimeout(5_000) { first.await() }
+            }
+        } finally {
+            firstDirectory.toFile().deleteRecursively()
+            secondDirectory.toFile().deleteRecursively()
+        }
+    }
+
+    fun testMultiDocumentDirectoryLockSerializesSymlinkAlias() = runTest {
+        val parent = Files.createTempDirectory("openapi-lock-symlink")
+        val realDirectory = Files.createDirectory(parent.resolve("real"))
+        val alias = parent.resolve("alias")
+        try {
+            try {
+                Files.createSymbolicLink(alias, realDirectory)
+            } catch (e: Exception) {
+                if (e is UnsupportedOperationException || e is IOException || e is SecurityException) {
+                    Assume.assumeNoException(e)
+                }
+                throw e
+            }
+            val firstEntered = CompletableDeferred<Unit>()
+            val releaseFirst = CompletableDeferred<Unit>()
+            val aliasStarted = CompletableDeferred<Unit>()
+            val aliasEntered = CompletableDeferred<Unit>()
+
+            coroutineScope {
+                val first = async {
+                    channel.withMultiDocumentDirectoryLock(realDirectory) {
+                        firstEntered.complete(Unit)
+                        releaseFirst.await()
+                    }
+                }
+                withTimeout(5_000) { firstEntered.await() }
+                val second = async {
+                    aliasStarted.complete(Unit)
+                    channel.withMultiDocumentDirectoryLock(alias) {
+                        aliasEntered.complete(Unit)
+                    }
+                }
+                withTimeout(5_000) { aliasStarted.await() }
+
+                try {
+                    assertNull(
+                        "A symlink alias must share the canonical directory lock",
+                        withTimeoutOrNull(500) { aliasEntered.await() },
+                    )
+                } finally {
+                    releaseFirst.complete(Unit)
+                }
+                withTimeout(5_000) {
+                    aliasEntered.await()
+                    awaitAll(first, second)
+                }
+            }
+        } finally {
+            Files.deleteIfExists(alias)
+            parent.toFile().deleteRecursively()
         }
     }
 
