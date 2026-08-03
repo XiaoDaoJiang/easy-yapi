@@ -88,22 +88,19 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
 
     init {
         val observationsByPath = linkedMapOf<String, MutableList<OwnershipObservation>>()
-        val operationInfos = linkedMapOf<EndpointOperationKey, MutableList<EndpointOperationInfo>>()
+        val operationInfos = linkedMapOf<EndpointOperationKey, EndpointOperationInfo>()
 
         for (endpoint in endpoints) {
             val metadata = endpoint.httpMetadata ?: continue
             val path = PathNormalizer.normalize(metadata.path) ?: continue
             observationsByPath.getOrPut(path) { mutableListOf() }
                 .add(OwnershipObservation(metadata.method, ownerOf(endpoint)))
-            operationInfos.getOrPut(EndpointOperationKey(path, metadata.method)) { mutableListOf() }
-                .add(
-                    EndpointOperationInfo(
-                        controller = endpoint.className?.trim()?.takeIf(String::isNotEmpty),
-                        folder = endpoint.folder?.trim()?.takeIf(String::isNotEmpty),
-                        methodName = endpoint.name?.trim()?.takeIf(String::isNotEmpty),
-                        responseType = metadata.responseType?.trim()?.takeIf(String::isNotEmpty),
-                    ),
-                )
+            operationInfos[EndpointOperationKey(path, metadata.method)] = EndpointOperationInfo(
+                controller = endpoint.className?.trim()?.takeIf(String::isNotEmpty),
+                folder = endpoint.folder?.trim()?.takeIf(String::isNotEmpty),
+                methodName = endpoint.name?.trim()?.takeIf(String::isNotEmpty),
+                responseType = metadata.responseType?.trim()?.takeIf(String::isNotEmpty),
+            )
         }
 
         for ((path, observations) in observationsByPath) {
@@ -117,16 +114,7 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
         }
         operationIndex = operationInfos.entries
             .sortedWith(compareBy({ it.key.path }, { it.key.method.name }))
-            .associate { (key, values) ->
-                key to values.minWith(
-                    compareBy(
-                        { it.responseType.orEmpty() },
-                        { it.controller.orEmpty() },
-                        { it.folder.orEmpty() },
-                        { it.methodName.orEmpty() },
-                    ),
-                )
-            }
+            .associate { it.key to it.value }
     }
 
     fun transform(

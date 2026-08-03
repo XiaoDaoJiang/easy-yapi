@@ -91,7 +91,6 @@ internal class OpenApiSemanticSchemaNamer(
         .asSequence()
         .sortedWith(compareBy({ it.key.path }, { it.key.method.name }))
         .mapNotNull { (key, info) ->
-            val semanticName = semanticName(info.responseType) ?: return@mapNotNull null
             val operation = operationAt(document.paths[key.path] ?: return@mapNotNull null, key.method)
                 ?: return@mapNotNull null
             val refs = operation.responses["200"]?.content
@@ -100,7 +99,15 @@ internal class OpenApiSemanticSchemaNamer(
                 ?.filter(schemas::containsKey)
                 ?.distinct()
                 .orEmpty()
-            refs.singleOrNull()?.let { RootBinding(key, it, semanticName) }
+            val oldName = refs.singleOrNull() ?: return@mapNotNull null
+            val semanticName = semanticName(info.responseType)
+                ?: if (GENERATED_NAME.matches(oldName)) {
+                    semanticName(operation.operationId)?.let { "${it}_Response" }
+                } else {
+                    null
+                }
+                ?: return@mapNotNull null
+            RootBinding(key, oldName, semanticName)
         }
         .distinct()
         .toList()
@@ -269,7 +276,7 @@ internal class OpenApiSemanticSchemaNamer(
             return if (cycleIndex >= 0) {
                 "cycle:${stack.size - cycleIndex}"
             } else {
-                "ref:${canonicalSchema(schemas.getValue(reference), schemas, stack + reference)}"
+                canonicalSchema(schemas.getValue(reference), schemas, stack + reference)
             }
         }
         return buildString {

@@ -90,6 +90,126 @@ class OpenApiSemanticSchemaNamerTest {
     }
 
     @Test
+    fun testTreatsInlineAndReferencedAliasAsTheSameCanonicalShape() {
+        val result = namer(
+            operation("/inline", HttpMethod.GET, "com.first.Wrapper"),
+            operation("/alias", HttpMethod.GET, "com.second.Wrapper"),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/inline" to pathItem(HttpMethod.GET, "InlineWrapper"),
+                    "/alias" to pathItem(HttpMethod.GET, "AliasWrapper"),
+                ),
+                schemas = linkedMapOf(
+                    "InlineWrapper" to objectSchema("value" to SchemaObject(type = "string")),
+                    "AliasWrapper" to objectSchema("value" to SchemaObject(`$ref` = ref("StringAlias"))),
+                    "StringAlias" to SchemaObject(type = "string"),
+                ),
+            ),
+        )
+
+        assertTrue("Equivalent inline and referenced shapes should share the plain semantic name", "Wrapper" in result.document.components!!.schemas!!)
+        assertFalse("Equivalent alias expansion must not add a collision hash", result.document.components!!.schemas!!.keys.any { it.startsWith("Wrapper__") })
+        assertEquals("Both operations should use the shared canonical component", ref("Wrapper"), responseRef(result.document, "/inline", HttpMethod.GET))
+        assertEquals("Both operations should use the shared canonical component", ref("Wrapper"), responseRef(result.document, "/alias", HttpMethod.GET))
+    }
+
+    @Test
+    fun testNamesDirectGeneratedRootFromResponseTypeThenOperationContext() {
+        val result = namer(
+            operation("/typed", HttpMethod.GET, "com.acme.DirectRootVO"),
+            operation("/fallback", HttpMethod.GET, responseType = null, methodName = null),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/typed" to pathItem(HttpMethod.GET, "GeneratedSchema40", operationId = "loadTyped"),
+                    "/fallback" to pathItem(HttpMethod.GET, "GeneratedSchema41", operationId = "loadFallback"),
+                ),
+                schemas = linkedMapOf(
+                    "GeneratedSchema40" to objectSchema("id" to SchemaObject(type = "string")),
+                    "GeneratedSchema41" to objectSchema("id" to SchemaObject(type = "integer")),
+                ),
+            ),
+        )
+
+        assertTrue("Response type should take precedence for a generated root", "DirectRootVO" in result.document.components!!.schemas!!)
+        assertTrue("Operation context should name an otherwise anonymous generated root", "loadFallback_Response" in result.document.components!!.schemas!!)
+        assertEquals("Typed operation should reference its semantic root", ref("DirectRootVO"), responseRef(result.document, "/typed", HttpMethod.GET))
+        assertEquals("Fallback operation should reference its contextual root", ref("loadFallback_Response"), responseRef(result.document, "/fallback", HttpMethod.GET))
+        assertFalse("Mapped generated roots should not remain unresolved", result.document.components!!.schemas!!.keys.any { Regex("GeneratedSchema\\d+").matches(it) })
+    }
+
+    @Test
+    fun testClonesOneSharedComponentForDifferentOperationResponseTypes() {
+        val result = namer(
+            operation("/alpha", HttpMethod.GET, "com.acme.AlphaResponse"),
+            operation("/zeta", HttpMethod.GET, "com.acme.ZetaResponse"),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/alpha" to pathItem(HttpMethod.GET, "SharedResponse"),
+                    "/zeta" to pathItem(HttpMethod.GET, "SharedResponse"),
+                ),
+                schemas = linkedMapOf("SharedResponse" to objectSchema("id" to SchemaObject(type = "string"))),
+            ),
+        )
+
+        assertEquals("Shared source should be cloned once per response type", setOf("AlphaResponse", "ZetaResponse"), result.document.components!!.schemas!!.keys)
+        assertEquals("Alpha operation should use its clone", ref("AlphaResponse"), responseRef(result.document, "/alpha", HttpMethod.GET))
+        assertEquals("Zeta operation should use its clone", ref("ZetaResponse"), responseRef(result.document, "/zeta", HttpMethod.GET))
+    }
+
+    @Test
+    fun testTokenizesArraysWildcardBoundsAndNestedClassSeparators() {
+        val cases = listOf(
+            Triple("/array", "ArraySource", "com.acme.ArrayBox<com.acme.UserVO[]>"),
+            Triple("/wildcard", "WildcardSource", "com.acme.WildcardBox<? extends com.acme.UserVO>"),
+            Triple("/java-nested", "JavaNestedSource", "com.acme.Outer\$JavaInner"),
+            Triple("/kotlin-nested", "KotlinNestedSource", "com.acme.Outer.KotlinInner"),
+        )
+        val expected = setOf("ArrayBox_UserVO", "WildcardBox_UserVO", "Outer_JavaInner", "Outer_KotlinInner")
+        val result = namer(
+            *cases.map { (path, _, type) -> operation(path, HttpMethod.GET, type) }.toTypedArray(),
+        ).rename(
+            document(
+                paths = cases.associateTo(linkedMapOf()) { (path, source, _) -> path to pathItem(HttpMethod.GET, source) },
+                schemas = cases.associateTo(linkedMapOf()) { (_, source, _) -> source to SchemaObject(type = "string") },
+            ),
+        )
+
+        assertEquals("Tokenizer should preserve type order while collapsing syntax separators", expected, result.document.components!!.schemas!!.keys)
+    }
+
+    @Test
+    fun testCanonicalShapeIgnoresPropertyAndRequiredInsertionOrder() {
+        val firstProperties = linkedMapOf(
+            "alpha" to SchemaObject(type = "string"),
+            "zeta" to SchemaObject(type = "integer"),
+        )
+        val secondProperties = linkedMapOf(
+            "zeta" to SchemaObject(type = "integer"),
+            "alpha" to SchemaObject(type = "string"),
+        )
+        val result = namer(
+            operation("/first-order", HttpMethod.GET, "com.first.OrderedResponse"),
+            operation("/second-order", HttpMethod.GET, "com.second.OrderedResponse"),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/first-order" to pathItem(HttpMethod.GET, "FirstOrder"),
+                    "/second-order" to pathItem(HttpMethod.GET, "SecondOrder"),
+                ),
+                schemas = linkedMapOf(
+                    "FirstOrder" to SchemaObject(type = "object", properties = firstProperties, required = listOf("zeta", "alpha")),
+                    "SecondOrder" to SchemaObject(type = "object", properties = secondProperties, required = listOf("alpha", "zeta")),
+                ),
+            ),
+        )
+
+        assertEquals("Map and required ordering should not create a hash", setOf("OrderedResponse"), result.document.components!!.schemas!!.keys)
+    }
+
+    @Test
     fun testNamesReachableGeneratedSchemasFromRootAndFieldPath() {
         val result = namer(
             operation("/tasks", HttpMethod.GET, "com.acme.SelfAssessmentTaskVO"),
@@ -154,11 +274,12 @@ class OpenApiSemanticSchemaNamerTest {
     private fun operation(
         path: String,
         method: HttpMethod,
-        responseType: String,
+        responseType: String?,
+        methodName: String? = "operation",
     ) = EndpointOperationKey(path, method) to EndpointOperationInfo(
         controller = "com.acme.Controller",
         folder = null,
-        methodName = "operation",
+        methodName = methodName,
         responseType = responseType,
     )
 
@@ -171,11 +292,15 @@ class OpenApiSemanticSchemaNamerTest {
         components = ComponentsObject(schemas),
     )
 
-    private fun pathItem(method: HttpMethod, schemaName: String): PathItemObject =
+    private fun pathItem(
+        method: HttpMethod,
+        schemaName: String,
+        operationId: String = "${method.name.lowercase()}_$schemaName",
+    ): PathItemObject =
         PathItemObject().withMethod(
             method,
             OperationObject(
-                operationId = "${method.name.lowercase()}_$schemaName",
+                operationId = operationId,
                 responses = linkedMapOf(
                     "200" to ResponseObject(
                         description = "OK",
