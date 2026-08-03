@@ -172,8 +172,12 @@ class OpenApiSemanticSchemaNamerTest {
             "/first" to pathItem(HttpMethod.GET, "FirstCollision"),
             "/second" to pathItem(HttpMethod.GET, "SecondCollision"),
         )
-        val occupiedName = namer(*operations).rename(document(paths, candidateSchemas))
-            .document.components!!.schemas!!.keys.single { it.startsWith("Collision__") }
+        val baseline = namer(*operations).rename(document(paths, candidateSchemas)).document
+        val occupiedName = baseline.components!!.schemas!!.keys.single { it.startsWith("Collision__") }
+        val fallbackPath = listOf("/first", "/second").single { path ->
+            responseRef(baseline, path, HttpMethod.GET) == ref(occupiedName)
+        }
+        val fallbackOldName = if (fallbackPath == "/first") "FirstCollision" else "SecondCollision"
         val existing = SchemaObject(
             type = "boolean",
             description = "existing schema must survive",
@@ -194,12 +198,27 @@ class OpenApiSemanticSchemaNamerTest {
             responseRef(result.document, "/first", HttpMethod.GET),
             responseRef(result.document, "/second", HttpMethod.GET),
         )
+        val reversedSource = document(
+            paths = source.paths.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+            schemas = source.components!!.schemas!!.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+        )
+        val reversed = namer(*operations.reversedArray()).rename(reversedSource)
 
         assertEquals("Reserved schema content must not be overwritten", existing, schemas.getValue(occupiedName))
         assertEquals("Existing operation reference should keep its meaning", ref(occupiedName), responseRef(result.document, "/existing", HttpMethod.GET))
+        assertEquals("Conflicting candidate should keep its protected original name", ref(fallbackOldName), responseRef(result.document, fallbackPath, HttpMethod.GET))
         assertFalse("Candidate response must not point at the conflicting existing schema", ref(occupiedName) in candidateRefs)
-        assertTrue("Conflicting candidate should receive a stable derived name", candidateRefs.filterNotNull().any { it.startsWith(ref("${occupiedName}__")) })
+        assertTrue(
+            "Semantic collision names must use exactly one eight-hex structural hash",
+            schemas.keys.filter { it.startsWith("Collision__") }.all { Regex("Collision__[0-9a-f]{8}").matches(it) },
+        )
         assertTrue("Different-shape reserved collision should produce a warning", result.warnings.any { it.contains(occupiedName) && it.contains("conflict", ignoreCase = true) })
+        assertEquals("Schema insertion order must not change final keys", schemas.keys, reversed.document.components!!.schemas!!.keys)
+        assertEquals(
+            "Endpoint insertion order must not change response references",
+            listOf("/first", "/second", "/existing").associateWith { responseRef(result.document, it, HttpMethod.GET) },
+            listOf("/first", "/second", "/existing").associateWith { responseRef(reversed.document, it, HttpMethod.GET) },
+        )
     }
 
     @Test
