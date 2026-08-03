@@ -3,8 +3,8 @@ package com.itangcent.easyapi.core.export
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
-import com.intellij.testFramework.registerServiceInstance
 import com.itangcent.easyapi.channel.spi.ChannelConfig
+import com.itangcent.easyapi.core.cache.api.ApiIndex
 import com.itangcent.easyapi.core.export.ApiEndpoint
 import com.itangcent.easyapi.core.export.ExportResult
 import com.itangcent.easyapi.core.export.HttpMethod
@@ -14,6 +14,7 @@ import com.itangcent.easyapi.core.settings.SettingBinder
 import com.itangcent.easyapi.core.settings.module.GeneralSettings
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
 import com.itangcent.easyapi.testFramework.TestConfigReader
+import kotlinx.coroutines.runBlocking
 
 class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
 
@@ -27,6 +28,7 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
     override fun setUp() {
         super.setUp()
         loadTestFiles()
+        runBlocking { ApiIndex.getInstance(project).updateEndpoints(emptyList()) }
         orchestrator = ExportOrchestrator.getInstance(project)
         previousDialog = try {
             TestDialogManager.setTestDialog(TestDialog { 0 })
@@ -127,14 +129,12 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
     }
 
     fun testOrchestrateExportWithEmptyCacheReturnsError() = runTest {
-        // When no endpoints are cached and no selection is provided,
-        // orchestrateExport should return an Error result.
-        // Note: If a background scan has populated the cache, this may return Success instead.
         val result = orchestrator.orchestrateExport(null, "markdown", testFileConfig)
-        assertNotNull(result)
-        assertTrue(
-            "Should be Error (no endpoints) or Success (background scan populated cache)",
-            result is ExportResult.Error || result is ExportResult.Success
+
+        assertEquals(
+            "Empty cache should return a no-endpoints error",
+            ExportResult.Error("No API endpoints found"),
+            result
         )
     }
 
