@@ -27,7 +27,8 @@ Export API endpoints from your source code to multiple formats:
 | cURL | ✓ | ✓ | Executable shell command |
 | HTTP Client | ✓ | ✓ | IntelliJ HTTP Client scratch file |
 | **Hoppscotch** *(Beta)* | ✓ | — | JSON file or direct upload to Hoppscotch |
-| **OpenAPI** *(Beta)* | ✓ | ✓ | Single `.json` / `.yaml` OpenAPI 3.0.3 file or Controller-grouped multi-document directory |
+| **OpenAPI** *(Beta)* | ✓ | ✓ | Single `.json` / `.yaml` OpenAPI 3.0.3 file |
+| **OpenAPI Multi-Document** *(Beta)* | ✓ | ✓ | Controller-grouped OpenAPI 3.0.3 directory with external `$ref` links |
 
 ### API Dashboard
 
@@ -139,17 +140,53 @@ for the full rule surface and a Spring-equivalent reference ruleset.
 
 1. Right-click on a controller file, class, or method in the editor or project view
 2. Select **EasyApi → Export** (or press `Ctrl+E` on macOS / `Alt+Shift+E`)
-3. Choose the target format (YApi / Postman / Hoppscotch *(Beta)* / Markdown / cURL / HTTP Client / OpenAPI *(Beta)*)
+3. Choose the target format (YApi / Postman / Hoppscotch *(Beta)* / Markdown / cURL / HTTP Client / OpenAPI *(Beta)* / OpenAPI Multi-Document *(Beta)*)
 4. The APIs will be exported automatically
 
-For OpenAPI, choose **Single file** (default) or **Multiple files by Controller**.
-Multi-document export writes `openapi.*` directly to the selected directory,
-one `paths/*` fragment per Controller, and `schemas/schemas.*` when reusable
-schemas exist. Cross-file `$ref` values use relative paths between the generated
-documents. Export stops before writing when the same normalized path belongs to
-multiple owners. Without Controller metadata, ownership falls back to the
-folder, then to an `Unresolved` fragment. Existing target files require one
-overwrite confirmation.
+#### OpenAPI export channels
+
+**OpenAPI (Beta)** keeps the original single-file JSON/YAML export unchanged.
+
+**OpenAPI Multi-Document (Beta)** is a separate channel with id
+`openapi-multi`. It is disabled by default and can be enabled independently.
+Once enabled, it is available in the general export dropdown and through its
+own **Export to OpenAPI Multi-Document** action. It reuses the original OpenAPI
+JSON/YAML options and persisted output-format setting.
+
+YAML output uses the following shallow layout; JSON uses the same layout with
+`.json` extensions:
+
+```text
+<selected directory>/
+├── openapi.yaml
+├── paths/
+│   ├── UserController.yaml
+│   └── Unresolved.yaml
+└── schemas/
+    └── schemas.yaml
+```
+
+Each Controller gets one Paths fragment rather than one file per API. Paths
+without a Controller use their folder as a fallback and otherwise go to
+`paths/Unresolved.*`. Schemas stay together in `schemas/schemas.yaml|json`, and
+the root `openapi.yaml|json` uses external `$ref` links. Schema names are
+semantic; a stable eight-hex-character short hash is added only when the same
+name represents genuinely different structures.
+
+The multi-document channel adds three diagnostic extensions:
+
+- `x-java-controller` identifies the owning Controller.
+- `x-easyapi-folder` records folder-based fallback ownership.
+- `x-easyapi-unresolved` marks paths that could not be assigned.
+
+Before writing, the exporter asks once before overwriting generated targets and
+aborts if their state changes during confirmation. Files are replaced through
+temporary siblings; stale or unrelated files are not deleted. A normalized
+path owned by different Controllers is rejected before export, while different
+HTTP methods from the same Controller may share a path.
+
+The first phase does not support package, tag, or schema grouping, a schema
+source index, or `x-java-type`.
 
 ### Call an API
 
