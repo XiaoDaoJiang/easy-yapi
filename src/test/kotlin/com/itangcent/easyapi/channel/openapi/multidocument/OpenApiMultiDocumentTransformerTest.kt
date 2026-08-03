@@ -489,6 +489,61 @@ class OpenApiMultiDocumentTransformerTest {
     }
 
     @Test
+    fun testAppliesSemanticSchemaNamesBeforeSplittingAndMergesWarnings() {
+        val result = OpenApiMultiDocumentTransformer(
+            listOf(
+                endpoint(
+                    "/users",
+                    HttpMethod.GET,
+                    "com.acme.UserController",
+                    responseType = "com.acme.BaseResponse<com.acme.UserVO>",
+                ),
+            ),
+        ).transform(
+            document(
+                linkedMapOf(
+                    "/users" to PathItemObject(
+                        get = OperationObject(
+                            operationId = "getUsers",
+                            responses = linkedMapOf(
+                                "200" to ResponseObject(
+                                    "OK",
+                                    linkedMapOf(
+                                        "application/json" to MediaTypeObject(
+                                            SchemaObject(`$ref` = "#/components/schemas/BaseResponse"),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    "/hook" to pathItem(HttpMethod.GET, "hook"),
+                ),
+                ComponentsObject(
+                    linkedMapOf(
+                        "BaseResponse" to SchemaObject(type = "object"),
+                        "GeneratedSchema9" to SchemaObject(type = "object"),
+                    ),
+                ),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        val schemas = result.additionalDocuments.getValue("schemas/schemas.yaml") as SchemasDocument
+        val users = result.additionalDocuments.getValue("paths/UserController.yaml") as PathsFragment
+        assertTrue("Schemas should be semantically named before extraction", "BaseResponse_UserVO" in schemas.components.schemas!!)
+        assertEquals(
+            "Extracted path should reference the renamed schema document component",
+            "../schemas/schemas.yaml#/components/schemas/BaseResponse_UserVO",
+            users.paths.getValue("/users").get!!.responses.getValue("200").content!!
+                .getValue("application/json").schema.`$ref`,
+        )
+        assertTrue("Namer warning should precede splitter warning", result.warnings.first().contains("GeneratedSchema9"))
+        assertTrue("Split warning should still be present", result.warnings.last().contains("/hook"))
+        assertEquals("Merged warnings should remain distinct", result.warnings.distinct(), result.warnings)
+    }
+
+    @Test
     fun testRejectsAlwaysAskOutputFormat() {
         val transformer = OpenApiMultiDocumentTransformer(
             listOf(endpoint("/users", HttpMethod.GET, "com.acme.UserController")),
@@ -532,7 +587,13 @@ class OpenApiMultiDocumentTransformerTest {
         method: HttpMethod,
         className: String? = null,
         folder: String? = null,
-    ) = ApiEndpoint(name = method.name, folder = folder, className = className, metadata = httpMetadata(path, method))
+        responseType: String? = null,
+    ) = ApiEndpoint(
+        name = method.name,
+        folder = folder,
+        className = className,
+        metadata = httpMetadata(path, method, responseType = responseType),
+    )
 
     private fun grpcEndpoint(className: String) = ApiEndpoint(
         name = "query",

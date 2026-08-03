@@ -65,6 +65,18 @@ internal data class MultiDocumentResult(
     val warnings: List<String>,
 )
 
+internal data class EndpointOperationKey(
+    val path: String,
+    val method: HttpMethod,
+)
+
+internal data class EndpointOperationInfo(
+    val controller: String?,
+    val folder: String?,
+    val methodName: String?,
+    val responseType: String?,
+)
+
 /**
  * Validates normalized path ownership and transforms one OpenAPI document
  * into owner-specific path fragments plus an optional schemas document.
@@ -72,15 +84,26 @@ internal data class MultiDocumentResult(
 internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
 
     private val ownersByPath = linkedMapOf<String, DocumentOwner>()
+    private val operationIndex: Map<EndpointOperationKey, EndpointOperationInfo>
 
     init {
         val observationsByPath = linkedMapOf<String, MutableList<OwnershipObservation>>()
+        val operationInfos = linkedMapOf<EndpointOperationKey, MutableList<EndpointOperationInfo>>()
 
         for (endpoint in endpoints) {
             val metadata = endpoint.httpMetadata ?: continue
             val path = PathNormalizer.normalize(metadata.path) ?: continue
             observationsByPath.getOrPut(path) { mutableListOf() }
                 .add(OwnershipObservation(metadata.method, ownerOf(endpoint)))
+            operationInfos.getOrPut(EndpointOperationKey(path, metadata.method)) { mutableListOf() }
+                .add(
+                    EndpointOperationInfo(
+                        controller = endpoint.className?.trim()?.takeIf(String::isNotEmpty),
+                        folder = endpoint.folder?.trim()?.takeIf(String::isNotEmpty),
+                        methodName = endpoint.name?.trim()?.takeIf(String::isNotEmpty),
+                        responseType = metadata.responseType?.trim()?.takeIf(String::isNotEmpty),
+                    ),
+                )
         }
 
         for ((path, observations) in observationsByPath) {
@@ -92,6 +115,18 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
             }
             ownersByPath[path] = owners.single()
         }
+        operationIndex = operationInfos.entries
+            .sortedWith(compareBy({ it.key.path }, { it.key.method.name }))
+            .associate { (key, values) ->
+                key to values.minWith(
+                    compareBy(
+                        { it.responseType.orEmpty() },
+                        { it.controller.orEmpty() },
+                        { it.folder.orEmpty() },
+                        { it.methodName.orEmpty() },
+                    ),
+                )
+            }
     }
 
     fun transform(
@@ -101,16 +136,19 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
         require(outputFormat != OpenApiOutputFormat.ALWAYS_ASK) {
             "OpenAPI output format ALWAYS_ASK must be resolved before transforming"
         }
+        val renameResult = OpenApiSemanticSchemaNamer(operationIndex).rename(document)
+        val semanticDocument = renameResult.document
         val extension = when (outputFormat) {
             OpenApiOutputFormat.JSON -> "json"
             OpenApiOutputFormat.YAML -> "yaml"
             OpenApiOutputFormat.ALWAYS_ASK -> error("checked above")
         }
         val warnings = linkedSetOf<String>()
+        warnings.addAll(renameResult.warnings)
         val ownerByDocumentPath = linkedMapOf<String, DocumentOwner>()
         val pathsByOwner = linkedMapOf<DocumentOwner, LinkedHashMap<String, PathItemObject>>()
 
-        for ((path, pathItem) in document.paths) {
+        for ((path, pathItem) in semanticDocument.paths) {
             val knownOwner = ownersByPath[path]
             val owner = knownOwner ?: DocumentOwner.Unresolved
             ownerByDocumentPath[path] = owner
@@ -129,7 +167,7 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
 
         val stems = allocateStems(pathsByOwner.keys)
         val schemaFile = "schemas/schemas.$extension"
-        val schemas = document.components?.schemas
+        val schemas = semanticDocument.components?.schemas
         val hasSchemas = !schemas.isNullOrEmpty()
         val additionalDocuments = linkedMapOf<String, Any>()
 
@@ -161,7 +199,7 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
         }
 
         val rootPaths = linkedMapOf<String, ExternalReference>()
-        for (path in document.paths.keys) {
+        for (path in semanticDocument.paths.keys) {
             val owner = ownerByDocumentPath.getValue(path)
             val fileName = "${stems.getValue(owner)}.$extension"
             val fragment = encodeRawUriFragment("/paths/${escapePointerToken(path)}")
@@ -180,18 +218,18 @@ internal class OpenApiMultiDocumentTransformer(endpoints: List<ApiEndpoint>) {
                 },
             )
         } else {
-            document.components
+            semanticDocument.components
         }
         if (hasSchemas) {
-            additionalDocuments[schemaFile] = SchemasDocument(document.components!!)
+            additionalDocuments[schemaFile] = SchemasDocument(semanticDocument.components!!)
         }
 
         return MultiDocumentResult(
             rootDocument = MultiDocumentRoot(
-                openapi = document.openapi,
-                info = document.info,
-                servers = document.servers,
-                tags = document.tags,
+                openapi = semanticDocument.openapi,
+                info = semanticDocument.info,
+                servers = semanticDocument.servers,
+                tags = semanticDocument.tags,
                 paths = rootPaths,
                 components = rootComponents,
             ),
