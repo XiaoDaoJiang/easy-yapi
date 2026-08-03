@@ -332,38 +332,65 @@ internal class OpenApiSemanticSchemaNamer(
         if (reference != null && reference in schemas) {
             val cycleIndex = stack.indexOf(reference)
             return if (cycleIndex >= 0) {
-                "cycle:${stack.size - cycleIndex}"
+                canonicalValue(
+                    mapOf(
+                        "kind" to "cycle",
+                        "depth" to stack.size - cycleIndex,
+                    ),
+                )
             } else {
                 canonicalSchema(schemas.getValue(reference), schemas, stack + reference)
             }
         }
-        return buildString {
-            append("ref=").append(schema.`$ref`.orEmpty())
-            append(";type=").append(schema.type.orEmpty())
-            append(";format=").append(schema.format.orEmpty())
-            append(";required=").append(schema.required.orEmpty().sorted().joinToString(","))
-            append(";enum=").append(canonicalValue(schema.enumValues))
-            append(";properties={")
-            schema.properties?.toSortedMap()?.forEach { (name, property) ->
-                append(name.length).append(':').append(name).append('=')
-                append(canonicalSchema(property, schemas, stack)).append(';')
-            }
-            append("};items=")
-            schema.items?.let { append(canonicalSchema(it, schemas, stack)) }
-            append(";additional=")
-            schema.additionalProperties?.let { append(canonicalSchema(it, schemas, stack)) }
-        }
+        return canonicalValue(
+            mapOf(
+                "kind" to "schema",
+                "ref" to schema.`$ref`,
+                "type" to schema.type,
+                "format" to schema.format,
+                "required" to schema.required.orEmpty().sorted(),
+                "enum" to schema.enumValues,
+                "properties" to schema.properties.orEmpty().mapValues { (_, property) ->
+                    canonicalSchema(property, schemas, stack)
+                },
+                "items" to schema.items?.let { canonicalSchema(it, schemas, stack) },
+                "additional" to schema.additionalProperties?.let { canonicalSchema(it, schemas, stack) },
+            ),
+        )
     }
 
     private fun canonicalValue(value: Any?): String = when (value) {
-        null -> ""
-        is Map<*, *> -> value.entries
-            .sortedBy { it.key.toString() }
-            .joinToString(prefix = "{", postfix = "}") { "${canonicalValue(it.key)}:${canonicalValue(it.value)}" }
+        null -> canonicalAtom('Z', "")
+        is String -> canonicalAtom('S', value)
+        is Number -> canonicalAtom('N', value.toString())
+        is Boolean -> canonicalAtom('B', value.toString())
+        is Map<*, *> -> canonicalMap(value)
+        is Iterable<*> -> canonicalList(value.map(::canonicalValue))
+        is Array<*> -> canonicalList(value.map(::canonicalValue))
+        else -> canonicalAtom('O', "${value.javaClass.name}:$value")
+    }
 
-        is Iterable<*> -> value.joinToString(prefix = "[", postfix = "]") { canonicalValue(it) }
-        is Array<*> -> value.joinToString(prefix = "[", postfix = "]") { canonicalValue(it) }
-        else -> value.toString()
+    private fun canonicalAtom(type: Char, value: String): String = "$type${value.length}:$value"
+
+    private fun canonicalList(values: List<String>): String = buildString {
+        append('L').append(values.size).append(':')
+        values.forEach { appendCanonicalPart(it) }
+    }
+
+    private fun canonicalMap(value: Map<*, *>): String {
+        val entries = value.entries.map { canonicalValue(it.key) to canonicalValue(it.value) }
+            .sortedWith(compareBy<Pair<String, String>> { it.first }.thenBy { it.second })
+        return buildString {
+            append('M').append(entries.size).append(':')
+            entries.forEach { (key, entryValue) ->
+                appendCanonicalPart(key)
+                appendCanonicalPart(entryValue)
+            }
+        }
+    }
+
+    private fun StringBuilder.appendCanonicalPart(value: String) {
+        append(value.length).append(':').append(value)
     }
 
     private fun semanticName(responseType: String?): String? {

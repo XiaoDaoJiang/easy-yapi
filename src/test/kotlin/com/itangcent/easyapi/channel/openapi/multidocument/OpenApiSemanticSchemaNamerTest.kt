@@ -378,6 +378,51 @@ class OpenApiSemanticSchemaNamerTest {
     }
 
     @Test
+    fun testCanonicalShapePreservesEnumAndRequiredBoundaries() {
+        val operations = arrayOf(
+            operation("/enum-single", HttpMethod.GET, "com.first.EnumCollision"),
+            operation("/enum-split", HttpMethod.GET, "com.second.EnumCollision"),
+            operation("/required-single", HttpMethod.GET, "com.first.RequiredCollision"),
+            operation("/required-split", HttpMethod.GET, "com.second.RequiredCollision"),
+        )
+        val source = document(
+            paths = linkedMapOf(
+                "/enum-single" to pathItem(HttpMethod.GET, "EnumSingle"),
+                "/enum-split" to pathItem(HttpMethod.GET, "EnumSplit"),
+                "/required-single" to pathItem(HttpMethod.GET, "RequiredSingle"),
+                "/required-split" to pathItem(HttpMethod.GET, "RequiredSplit"),
+            ),
+            schemas = linkedMapOf(
+                "EnumSingle" to SchemaObject(type = "string", enumValues = listOf("a,b")),
+                "EnumSplit" to SchemaObject(type = "string", enumValues = listOf("a", "b")),
+                "RequiredSingle" to SchemaObject(type = "object", required = listOf("a,b")),
+                "RequiredSplit" to SchemaObject(type = "object", required = listOf("a", "b")),
+            ),
+        )
+
+        val result = namer(*operations).rename(source).document
+        val reversedSource = document(
+            paths = source.paths.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+            schemas = source.components!!.schemas!!.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+        )
+        val reversed = namer(*operations.reversedArray()).rename(reversedSource).document
+        val keys = result.components!!.schemas!!.keys
+
+        assertTrue("One enum shape should retain the plain semantic name", "EnumCollision" in keys)
+        assertEquals("Delimited enum values should produce one structural hash", 1, keys.count { Regex("EnumCollision__[0-9a-f]{8}").matches(it) })
+        assertNotEquals("One delimited enum value must differ from two enum values", responseRef(result, "/enum-single", HttpMethod.GET), responseRef(result, "/enum-split", HttpMethod.GET))
+        assertTrue("One required shape should retain the plain semantic name", "RequiredCollision" in keys)
+        assertEquals("Delimited required names should produce one structural hash", 1, keys.count { Regex("RequiredCollision__[0-9a-f]{8}").matches(it) })
+        assertNotEquals("One delimited required name must differ from two required names", responseRef(result, "/required-single", HttpMethod.GET), responseRef(result, "/required-split", HttpMethod.GET))
+        assertEquals("Schema insertion order must not change boundary-aware keys", keys, reversed.components!!.schemas!!.keys)
+        assertEquals(
+            "Endpoint insertion order must not change boundary-aware references",
+            source.paths.keys.associateWith { responseRef(result, it, HttpMethod.GET) },
+            source.paths.keys.associateWith { responseRef(reversed, it, HttpMethod.GET) },
+        )
+    }
+
+    @Test
     fun testNamesReachableGeneratedSchemasFromRootAndFieldPath() {
         val result = namer(
             operation("/tasks", HttpMethod.GET, "com.acme.SelfAssessmentTaskVO"),
