@@ -361,6 +361,124 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
         }
     }
 
+    fun testHandleResultStopsWhenMissingTargetAppearsDuringOverwriteConfirmation() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-confirm-target-created")
+        val root = tempDir.resolve("openapi.yaml")
+        val fragment = tempDir.resolve("paths/UserController.yaml")
+        val prompts = mutableListOf<String>()
+        try {
+            Files.writeString(root, "existing root")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                if (message.contains("existing OpenAPI", ignoreCase = true)) {
+                    prompts += message
+                    Files.createDirectories(fragment.parent)
+                    Files.writeString(fragment, "callback fragment")
+                }
+                Messages.YES
+            })
+
+            var failure: IllegalArgumentException? = null
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "generated fragment"),
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (e: IllegalArgumentException) {
+                failure = e
+            }
+
+            assertNotNull("A target created during confirmation should abort the export", failure)
+            assertTrue(
+                "Failure should explain that output targets changed: ${failure?.message}",
+                failure?.message?.contains("output targets changed", ignoreCase = true) == true,
+            )
+            assertEquals("The changed target state should still use one confirmation", 1, prompts.size)
+            assertEquals("Aborted export must leave the existing root unchanged", "existing root", Files.readString(root))
+            assertEquals("Aborted export must preserve the callback fragment", "callback fragment", Files.readString(fragment))
+            assertTrue(
+                "Aborted export must not leave temporary files",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultStopsWhenParentBecomesExternalSymlinkDuringConfirmation() = runTest {
+        val root = Files.createTempDirectory("openapi-multi-confirm-parent-symlink")
+        val outside = Files.createTempDirectory("openapi-multi-confirm-parent-outside")
+        val rootDocument = root.resolve("openapi.yaml")
+        val pathsDirectory = Files.createDirectory(root.resolve("paths"))
+        val symlinkProbe = root.resolve("symlink-probe")
+        val outsideTarget = outside.resolve("UserController.yaml")
+        val prompts = mutableListOf<String>()
+        try {
+            try {
+                Files.createSymbolicLink(symlinkProbe, outside)
+            } catch (e: Exception) {
+                if (e is UnsupportedOperationException || e is IOException || e is SecurityException) {
+                    Assume.assumeNoException(e)
+                }
+                throw e
+            }
+            Files.deleteIfExists(symlinkProbe)
+            Files.writeString(rootDocument, "existing root")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                if (message.contains("existing OpenAPI", ignoreCase = true)) {
+                    prompts += message
+                    Files.delete(pathsDirectory)
+                    Files.createSymbolicLink(pathsDirectory, outside)
+                }
+                Messages.YES
+            })
+
+            var failure: IllegalArgumentException? = null
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "generated fragment"),
+                    ),
+                    ChannelConfig.FileConfig(root.toString()),
+                )
+            } catch (e: IllegalArgumentException) {
+                failure = e
+            }
+
+            assertNotNull("A parent redirected during confirmation should abort the export", failure)
+            assertTrue(
+                "Failure should explain that output targets changed: ${failure?.message}",
+                failure?.message?.contains("output targets changed", ignoreCase = true) == true,
+            )
+            assertEquals("The redirected parent state should still use one confirmation", 1, prompts.size)
+            assertEquals("Aborted export must leave the existing root unchanged", "existing root", Files.readString(rootDocument))
+            assertFalse("Aborted export must not write through the external symlink", Files.exists(outsideTarget))
+            assertTrue("Aborted export must preserve the callback symlink", Files.isSymbolicLink(pathsDirectory))
+            assertTrue(
+                "Aborted export must not leave temporary files",
+                Files.walk(root).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                } && Files.walk(outside).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            Files.deleteIfExists(symlinkProbe)
+            Files.deleteIfExists(pathsDirectory)
+            root.toFile().deleteRecursively()
+            outside.toFile().deleteRecursively()
+        }
+    }
+
     fun testConcurrentMultiDocumentExportsToSameDirectoryStayConsistent() = runTest {
         val tempDir = Files.createTempDirectory("openapi-multi-concurrent")
         val prompts = java.util.Collections.synchronizedList(mutableListOf<String>())
