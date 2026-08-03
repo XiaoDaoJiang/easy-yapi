@@ -3,6 +3,7 @@ package com.itangcent.easyapi.core.export
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
+import com.intellij.testFramework.registerServiceInstance
 import com.itangcent.easyapi.channel.spi.ChannelConfig
 import com.itangcent.easyapi.core.cache.api.ApiIndex
 import com.itangcent.easyapi.core.export.ApiEndpoint
@@ -19,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
 
     private lateinit var orchestrator: ExportOrchestrator
+    private lateinit var apiIndex: ApiIndex
     private var previousDialog: TestDialog? = null
     // Use ChannelConfig.FileConfig (SPI base) instead of MarkdownConfig so this
     // test file does not import channel.<id>.* — MarkdownChannel will fall back
@@ -28,7 +30,9 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
     override fun setUp() {
         super.setUp()
         loadTestFiles()
-        runBlocking { ApiIndex.getInstance(project).updateEndpoints(emptyList()) }
+        apiIndex = ApiIndex()
+        project.registerServiceInstance(ApiIndex::class.java, apiIndex)
+        runBlocking { apiIndex.updateEndpoints(emptyList()) }
         orchestrator = ExportOrchestrator.getInstance(project)
         previousDialog = try {
             TestDialogManager.setTestDialog(TestDialog { 0 })
@@ -67,6 +71,10 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
         val instance2 = ExportOrchestrator.getInstance(project)
 
         assertSame("Should return same instance for same project", instance1, instance2)
+    }
+
+    fun testApiIndexFixtureIsRegistered() {
+        assertSame("Project should use the isolated API index fixture", apiIndex, ApiIndex.getInstance(project))
     }
 
     fun testOrchestratorHasCorrectProjectReference() {
