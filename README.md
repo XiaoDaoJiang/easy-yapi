@@ -27,8 +27,8 @@ Export API endpoints from your source code to multiple formats:
 | cURL | ✓ | ✓ | Executable shell command |
 | HTTP Client | ✓ | ✓ | IntelliJ HTTP Client scratch file |
 | **Hoppscotch** *(Beta)* | ✓ | — | JSON file or direct upload to Hoppscotch |
-| **OpenAPI** *(Beta)* | ✓ | ✓ | Single `.json` / `.yaml` OpenAPI 3.0.3 file |
-| **OpenAPI Multi-Document** *(Beta)* | ✓ | ✓ | Controller-grouped OpenAPI 3.0.3 directory with external `$ref` links |
+| **OpenAPI** *(Beta)* | ✓ | — | Single `.json` / `.yaml` OpenAPI 3.0.3 file |
+| **OpenAPI Multi-Document** *(Beta)* | ✓ | — | Controller-grouped OpenAPI 3.0.3 directory with external `$ref` links |
 
 ### API Dashboard
 
