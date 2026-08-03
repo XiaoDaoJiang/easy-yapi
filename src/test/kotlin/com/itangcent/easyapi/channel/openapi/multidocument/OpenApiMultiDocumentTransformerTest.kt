@@ -544,6 +544,51 @@ class OpenApiMultiDocumentTransformerTest {
     }
 
     @Test
+    fun testUsesLastDuplicateEndpointInfoLikeFormatter() {
+        val result = OpenApiMultiDocumentTransformer(
+            listOf(
+                endpoint(
+                    "/users",
+                    HttpMethod.GET,
+                    "com.acme.UserController",
+                    responseType = "com.acme.AlphaResponse",
+                ),
+                endpoint(
+                    "/users",
+                    HttpMethod.GET,
+                    "com.acme.UserController",
+                    responseType = "com.acme.ZetaResponse",
+                ),
+            ),
+        ).transform(
+            document(
+                linkedMapOf(
+                    "/users" to PathItemObject(
+                        get = OperationObject(
+                            operationId = "getUsers",
+                            responses = linkedMapOf(
+                                "200" to ResponseObject(
+                                    "OK",
+                                    linkedMapOf(
+                                        "application/json" to MediaTypeObject(
+                                            SchemaObject(`$ref` = "#/components/schemas/GeneratedSchema1"),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                ComponentsObject(linkedMapOf("GeneratedSchema1" to SchemaObject(type = "object"))),
+            ),
+            OpenApiOutputFormat.YAML,
+        )
+
+        val schemas = result.additionalDocuments.getValue("schemas/schemas.yaml") as SchemasDocument
+        assertEquals("Duplicate operation info should follow formatter last-wins semantics", setOf("ZetaResponse"), schemas.components.schemas!!.keys)
+    }
+
+    @Test
     fun testRejectsAlwaysAskOutputFormat() {
         val transformer = OpenApiMultiDocumentTransformer(
             listOf(endpoint("/users", HttpMethod.GET, "com.acme.UserController")),
