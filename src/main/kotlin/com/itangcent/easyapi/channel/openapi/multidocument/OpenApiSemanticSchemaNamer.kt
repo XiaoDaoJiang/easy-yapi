@@ -172,71 +172,70 @@ internal class OpenApiSemanticSchemaNamer(
         val reserved = schemas.keys
             .filterNot(renamedOldNames::contains)
             .associateWith { canonicalStructure(it, schemas) }
-        val usedNames = reserved.toMutableMap()
-        candidates.groupBy(Candidate::oldName).toSortedMap().forEach { (oldName, sameSource) ->
+        val canonicalByOldName = candidates.groupBy(Candidate::oldName).toSortedMap().mapValues { (oldName, sameSource) ->
             val shapes = sameSource.mapTo(mutableSetOf(), Candidate::canonical)
             check(shapes.size == 1) {
                 "OpenAPI component '$oldName' cannot have multiple canonical shapes"
             }
-            val previous = usedNames.putIfAbsent(oldName, shapes.single())
-            check(previous == null || previous == shapes.single()) {
-                "OpenAPI component '$oldName' conflicts with a protected different shape"
-            }
+            shapes.single()
         }
-        val result = mutableMapOf<Candidate, String>()
+        val protectedOldNames = sortedSetOf<String>()
+        var allocationPass = 0
 
-        for ((baseName, sameName) in candidates.groupBy(Candidate::semanticName).toSortedMap()) {
-            val byShape = sameName.groupBy(Candidate::canonical).toSortedMap()
-            val existingBaseShape = usedNames[baseName]
-            val plainShape = when {
-                existingBaseShape == null -> byShape.keys.firstOrNull()
-                existingBaseShape in byShape -> existingBaseShape
-                else -> {
-                    warnings += "OpenAPI schema name '$baseName' conflicts with an existing different shape; using hashed semantic names"
-                    null
+        while (true) {
+            check(allocationPass <= canonicalByOldName.size) {
+                "OpenAPI schema name allocation did not stabilize"
+            }
+            allocationPass++
+            val usedNames = reserved.toMutableMap()
+            protectedOldNames.forEach { oldName ->
+                val canonical = canonicalByOldName.getValue(oldName)
+                val previous = usedNames.putIfAbsent(oldName, canonical)
+                check(previous == null || previous == canonical) {
+                    "OpenAPI component '$oldName' conflicts with a protected different shape"
                 }
             }
-            for ((canonical, sameShape) in byShape) {
-                val preferredName = if (canonical == plainShape) {
-                    baseName
-                } else {
-                    "${baseName}__${stableHash(canonical)}"
+            val passWarnings = mutableListOf<String>()
+            val newlyProtected = sortedSetOf<String>()
+            val result = mutableMapOf<Candidate, String>()
+
+            for ((baseName, sameName) in candidates.groupBy(Candidate::semanticName).toSortedMap()) {
+                val byShape = sameName.groupBy(Candidate::canonical).toSortedMap()
+                val existingBaseShape = usedNames[baseName]
+                val plainShape = when {
+                    existingBaseShape == null -> byShape.keys.firstOrNull()
+                    existingBaseShape in byShape -> existingBaseShape
+                    else -> {
+                        passWarnings += "OpenAPI schema name '$baseName' conflicts with an existing different shape; using hashed semantic names"
+                        null
+                    }
                 }
-                val finalName = availableName(
-                    preferredName,
-                    canonical,
-                    sameShape.map(Candidate::oldName),
-                    usedNames,
-                    warnings,
-                )
-                sameShape.forEach { result[it] = finalName }
+                for ((canonical, sameShape) in byShape) {
+                    val preferredName = if (canonical == plainShape) {
+                        baseName
+                    } else {
+                        "${baseName}__${stableHash(canonical)}"
+                    }
+                    val existingShape = usedNames[preferredName]
+                    val finalName = when {
+                        existingShape == null -> preferredName.also { usedNames[it] = canonical }
+                        existingShape == canonical -> preferredName
+                        else -> {
+                            val fallbackName = sameShape.map(Candidate::oldName).sorted().first()
+                            newlyProtected += fallbackName
+                            passWarnings += "OpenAPI schema name '$preferredName' conflicts with an existing different shape; kept '$fallbackName'"
+                            fallbackName
+                        }
+                    }
+                    sameShape.forEach { result[it] = finalName }
+                }
             }
+            if (protectedOldNames.containsAll(newlyProtected)) {
+                warnings += passWarnings
+                return result
+            }
+            protectedOldNames += newlyProtected
         }
-        return result
-    }
-
-    private fun availableName(
-        preferredName: String,
-        canonical: String,
-        fallbackOldNames: List<String>,
-        usedNames: MutableMap<String, String>,
-        warnings: MutableCollection<String>,
-    ): String {
-        val existingShape = usedNames[preferredName]
-        if (existingShape == null) {
-            usedNames[preferredName] = canonical
-            return preferredName
-        }
-        if (existingShape == canonical) return preferredName
-
-        val fallbackName = fallbackOldNames.sorted().firstOrNull { oldName ->
-            usedNames[oldName] == canonical
-        }
-        check(fallbackName != null) {
-            "OpenAPI schema '$preferredName' has no protected original name for its canonical shape"
-        }
-        warnings += "OpenAPI schema name '$preferredName' conflicts with an existing different shape; kept '$fallbackName'"
-        return fallbackName
     }
 
     private fun rewritePathItem(
