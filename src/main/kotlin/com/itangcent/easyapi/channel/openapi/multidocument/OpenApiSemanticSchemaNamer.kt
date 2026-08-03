@@ -48,7 +48,8 @@ internal class OpenApiSemanticSchemaNamer(
             }
         }
         for ((finalName, sameTarget) in distinctCandidates.groupBy { finalNames.getValue(it) }.toSortedMap()) {
-            val source = sameTarget.minBy(Candidate::oldName)
+            val source = sameTarget.firstOrNull { it.oldName == finalName }
+                ?: sameTarget.minBy(Candidate::oldName)
             if (finalName in rewrittenSchemas) {
                 check(canonicalStructure(finalName, schemas) == source.canonical) {
                     "OpenAPI schema allocation attempted to overwrite '$finalName' with a different shape"
@@ -172,14 +173,24 @@ internal class OpenApiSemanticSchemaNamer(
             .filterNot(renamedOldNames::contains)
             .associateWith { canonicalStructure(it, schemas) }
         val usedNames = reserved.toMutableMap()
+        candidates.groupBy(Candidate::oldName).toSortedMap().forEach { (oldName, sameSource) ->
+            val shapes = sameSource.mapTo(mutableSetOf(), Candidate::canonical)
+            check(shapes.size == 1) {
+                "OpenAPI component '$oldName' cannot have multiple canonical shapes"
+            }
+            val previous = usedNames.putIfAbsent(oldName, shapes.single())
+            check(previous == null || previous == shapes.single()) {
+                "OpenAPI component '$oldName' conflicts with a protected different shape"
+            }
+        }
         val result = mutableMapOf<Candidate, String>()
 
         for ((baseName, sameName) in candidates.groupBy(Candidate::semanticName).toSortedMap()) {
             val byShape = sameName.groupBy(Candidate::canonical).toSortedMap()
-            val reservedBaseShape = reserved[baseName]
+            val existingBaseShape = usedNames[baseName]
             val plainShape = when {
-                baseName !in reserved -> byShape.keys.firstOrNull()
-                reservedBaseShape in byShape -> reservedBaseShape
+                existingBaseShape == null -> byShape.keys.firstOrNull()
+                existingBaseShape in byShape -> existingBaseShape
                 else -> {
                     warnings += "OpenAPI schema name '$baseName' conflicts with an existing different shape; using hashed semantic names"
                     null
@@ -191,7 +202,13 @@ internal class OpenApiSemanticSchemaNamer(
                 } else {
                     "${baseName}__${stableHash(canonical)}"
                 }
-                val finalName = availableName(preferredName, canonical, usedNames, warnings)
+                val finalName = availableName(
+                    preferredName,
+                    canonical,
+                    sameShape.map(Candidate::oldName),
+                    usedNames,
+                    warnings,
+                )
                 sameShape.forEach { result[it] = finalName }
             }
         }
@@ -201,6 +218,7 @@ internal class OpenApiSemanticSchemaNamer(
     private fun availableName(
         preferredName: String,
         canonical: String,
+        fallbackOldNames: List<String>,
         usedNames: MutableMap<String, String>,
         warnings: MutableCollection<String>,
     ): String {
@@ -211,17 +229,14 @@ internal class OpenApiSemanticSchemaNamer(
         }
         if (existingShape == canonical) return preferredName
 
-        var suffix = 2
-        while (true) {
-            val candidate = "${preferredName}__$suffix"
-            val candidateShape = usedNames[candidate]
-            if (candidateShape == null || candidateShape == canonical) {
-                if (candidateShape == null) usedNames[candidate] = canonical
-                warnings += "OpenAPI schema name '$preferredName' conflicts with an existing different shape; allocated '$candidate'"
-                return candidate
-            }
-            suffix++
+        val fallbackName = fallbackOldNames.sorted().firstOrNull { oldName ->
+            usedNames[oldName] == canonical
         }
+        check(fallbackName != null) {
+            "OpenAPI schema '$preferredName' has no protected original name for its canonical shape"
+        }
+        warnings += "OpenAPI schema name '$preferredName' conflicts with an existing different shape; kept '$fallbackName'"
+        return fallbackName
     }
 
     private fun rewritePathItem(
