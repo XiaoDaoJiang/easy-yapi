@@ -15,15 +15,11 @@ import javax.swing.JRadioButton
  *
  * The v1 envelope fields (`infoTitle` / `infoVersion` / `infoDescription` /
  * `serverUrl`) were removed — those values vary per project and belong in
- * rule scripts. The options panel exposes a two-way format selector:
+ * rule scripts. The options panel now exposes ONLY a two-way format
+ * selector:
  *
  *  - **JSON** (radio, default-selected)
  *  - **YAML** (radio)
- *
- * and a two-way document layout selector:
- *
- *  - **Single file** (radio, default-selected)
- *  - **Multiple files by Controller** (radio)
  *
  * The "Always Ask" option is NOT exposed here — the panel itself is the
  * per-export prompt, so offering "Always Ask" would be redundant (it would
@@ -49,17 +45,11 @@ class OpenApiOptionsPanel(@Suppress("UNUSED_PARAMETER") private val project: Pro
 
     private val jsonRadio = JRadioButton("JSON", true)
     private val yamlRadio = JRadioButton("YAML", false)
-    private val singleFileRadio = JRadioButton("Single file", true)
-    private val multiFileByControllerRadio = JRadioButton("Multiple files by Controller", false)
 
     init {
         ButtonGroup().apply {
             add(jsonRadio)
             add(yamlRadio)
-        }
-        ButtonGroup().apply {
-            add(singleFileRadio)
-            add(multiFileByControllerRadio)
         }
     }
 
@@ -71,28 +61,16 @@ class OpenApiOptionsPanel(@Suppress("UNUSED_PARAMETER") private val project: Pro
                 add(yamlRadio)
             },
         )
-        .addLabeledComponent(
-            "Document:",
-            JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(singleFileRadio)
-                add(multiFileByControllerRadio)
-            },
-        )
         .addComponentFillVertically(JPanel(), 0)
         .panel
 
     override fun buildConfig(): OpenApiConfig = OpenApiConfig(
         outputFormat = if (yamlRadio.isSelected) OpenApiOutputFormat.YAML
         else OpenApiOutputFormat.JSON,
-        documentMode = if (multiFileByControllerRadio.isSelected) {
-            OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER
-        } else {
-            OpenApiDocumentMode.SINGLE_FILE
-        },
     )
 
     /**
-     * Populates both radio selections from a pre-built [OpenApiConfig].
+     * Populates the radio selection from a pre-built [OpenApiConfig].
      *
      * Resets every radio so the panel reflects [cfg]. When [cfg.outputFormat]
      * is `ALWAYS_ASK` (only reachable from [OpenApiSettings] — the panel
@@ -102,21 +80,10 @@ class OpenApiOptionsPanel(@Suppress("UNUSED_PARAMETER") private val project: Pro
     fun applyConfig(cfg: OpenApiConfig) {
         jsonRadio.isSelected = cfg.outputFormat != OpenApiOutputFormat.YAML
         yamlRadio.isSelected = cfg.outputFormat == OpenApiOutputFormat.YAML
-        singleFileRadio.isSelected = cfg.documentMode == OpenApiDocumentMode.SINGLE_FILE
-        multiFileByControllerRadio.isSelected =
-            cfg.documentMode == OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER
     }
 
     /** Test-visible setter for the format radio. */
     internal fun setFormat(format: OpenApiOutputFormat) {
-        jsonRadio.isSelected = format != OpenApiOutputFormat.YAML
-        yamlRadio.isSelected = format == OpenApiOutputFormat.YAML
-    }
-
-    /** Test-visible setter for the document layout radio. */
-    internal fun setDocumentMode(mode: OpenApiDocumentMode) {
-        singleFileRadio.isSelected = mode == OpenApiDocumentMode.SINGLE_FILE
-        multiFileByControllerRadio.isSelected =
-            mode == OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER
+        applyConfig(OpenApiConfig(outputFormat = format))
     }
 }

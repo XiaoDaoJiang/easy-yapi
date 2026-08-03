@@ -96,50 +96,6 @@ class OpenApiExportMetadataTest {
         assertEquals("{}", copy.content)
     }
 
-    @Test
-    fun `legacy constructor defaults to single file metadata`() {
-        val metadata = OpenApiExportMetadata(
-            document = minimalDoc(),
-            outputFormat = OpenApiOutputFormat.JSON,
-            content = "{}",
-        )
-
-        assertEquals(OpenApiDocumentMode.SINGLE_FILE, metadata.documentMode)
-        assertEquals(linkedMapOf<String, String>(), metadata.additionalFiles)
-        assertEquals(0, metadata.pathFragmentCount)
-        assertEquals(0, metadata.schemaCount)
-        assertEquals(0, metadata.unresolvedPathCount)
-        assertEquals(emptyList<String>(), metadata.warnings)
-    }
-
-    @Test
-    fun `multi-file metadata stores generated files and keeps format display`() {
-        val additionalFiles = linkedMapOf(
-            "paths/UserController.yaml" to "paths:\n  /users: {}",
-            "schemas/schemas.yaml" to "components:\n  schemas: {}",
-        )
-        val warnings = listOf("Path '/hooked' was unresolved")
-        val metadata = OpenApiExportMetadata(
-            document = minimalDoc(),
-            outputFormat = OpenApiOutputFormat.YAML,
-            content = "openapi: \"3.0.3\"",
-            documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
-            additionalFiles = additionalFiles,
-            pathFragmentCount = 1,
-            schemaCount = 2,
-            unresolvedPathCount = 1,
-            warnings = warnings,
-        )
-
-        assertEquals("Format: YAML", metadata.formatDisplay())
-        assertSame(additionalFiles, metadata.additionalFiles)
-        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, metadata.documentMode)
-        assertEquals(1, metadata.pathFragmentCount)
-        assertEquals(2, metadata.schemaCount)
-        assertEquals(1, metadata.unresolvedPathCount)
-        assertSame(warnings, metadata.warnings)
-    }
-
     private fun minimalDoc(): OpenApiDocument = OpenApiDocument(
         info = InfoObject(title = "T", version = "1.0.0"),
         paths = linkedMapOf(),

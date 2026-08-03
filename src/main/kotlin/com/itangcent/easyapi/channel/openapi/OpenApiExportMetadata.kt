@@ -22,25 +22,11 @@ import com.itangcent.easyapi.core.export.ExportMetadata
  *   and the file-name extension in `handleResult`).
  * @property content the already-serialized document string (JSON or YAML).
  *   `handleResult` writes this verbatim to the output file.
- * @property documentMode physical layout selected for this export.
- * @property additionalFiles serialized path/schema documents keyed by their
- *   root-relative file names. Empty for single-file exports.
- * @property pathFragmentCount number of generated path fragment documents.
- * @property schemaCount number of schemas moved to the shared schema document.
- * @property unresolvedPathCount number of paths placed in the unresolved
- *   fragment.
- * @property warnings non-blocking split warnings to surface with the export.
  */
 data class OpenApiExportMetadata(
     val document: OpenApiDocument,
     val outputFormat: OpenApiOutputFormat,
     val content: String,
-    val documentMode: OpenApiDocumentMode = OpenApiDocumentMode.SINGLE_FILE,
-    val additionalFiles: LinkedHashMap<String, String> = linkedMapOf(),
-    val pathFragmentCount: Int = 0,
-    val schemaCount: Int = 0,
-    val unresolvedPathCount: Int = 0,
-    val warnings: List<String> = emptyList(),
 ) : ExportMetadata {
     override fun formatDisplay(): String? = when (outputFormat) {
         OpenApiOutputFormat.JSON -> "Format: JSON"

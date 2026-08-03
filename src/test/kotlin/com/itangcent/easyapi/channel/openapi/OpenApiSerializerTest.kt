@@ -79,28 +79,6 @@ class OpenApiSerializerTest {
         )
     }
 
-    @Test
-    fun pathFragmentJson() {
-        val json = OpenApiSerializer.toJson(pathFragment())
-
-        assertTrue("JSON should contain the path fragment root", json.contains("\"paths\""))
-        assertTrue(
-            "JSON should contain the external path reference",
-            json.contains("\"\$ref\": \"./paths/UserController.yaml#/paths/~1users\""),
-        )
-    }
-
-    @Test
-    fun pathFragmentYaml() {
-        val yaml = OpenApiSerializer.toYaml(pathFragment())
-
-        assertTrue("YAML should contain the path fragment root", yaml.contains("paths:"))
-        assertTrue(
-            "YAML should contain the external path reference",
-            yaml.contains("\$ref: \"./paths/UserController.yaml#/paths/~1users\""),
-        )
-    }
-
     // ─── Critical structural assertions ───────────────
 
     @Test
@@ -261,14 +239,6 @@ class OpenApiSerializerTest {
         val className = "com.itangcent.easyapi.channel.openapi.OpenApiSerializerTest"
         return "result/$className.$name.txt"
     }
-
-    private fun pathFragment(): LinkedHashMap<String, Any> = linkedMapOf(
-        "paths" to linkedMapOf(
-            "/users" to PathItemObject(
-                `$ref` = "./paths/UserController.yaml#/paths/~1users",
-            ),
-        ),
-    )
 
     private fun minimalDoc(): OpenApiDocument {
         // One GET endpoint, void response (204), no components, no servers, no tags.
