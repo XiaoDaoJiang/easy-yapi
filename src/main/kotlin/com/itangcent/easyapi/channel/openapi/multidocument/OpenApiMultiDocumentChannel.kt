@@ -123,7 +123,10 @@ class OpenApiMultiDocumentChannel internal constructor(
         val rootDirectory = resolveTargetDirectory(project, config)
         withMultiDocumentDirectoryLock(rootDirectory) {
             val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
-            val existingCount = background { targets.keys.count(Files::exists) }
+            val existingCount = background {
+                validateMultiDocumentTargets(rootDirectory, targets.keys)
+                targets.keys.count { target -> Files.exists(target, NOFOLLOW_LINKS) }
+            }
             if (existingCount > 0) {
                 val overwrite = swing {
                     Messages.showYesNoDialog(
@@ -139,7 +142,6 @@ class OpenApiMultiDocumentChannel internal constructor(
             }
 
             background {
-                validateMultiDocumentTargets(rootDirectory, targets.keys)
                 targets.forEach { (target, content) ->
                     writeOutputFile(target, content)
                 }
@@ -231,13 +233,21 @@ class OpenApiMultiDocumentChannel internal constructor(
         targets: Collection<Path>,
     ) {
         val canonicalRoot = resolveFutureRealPath(rootDirectory)
+        val targetIdentities = mutableSetOf<Path>()
         targets.forEach { target ->
             val parent = requireNotNull(target.parent) {
                 "OpenAPI output file has no parent directory: $target"
             }
             val canonicalParent = resolveFutureRealPath(parent)
-            require(canonicalParent.startsWith(canonicalRoot)) {
+            val fileName = requireNotNull(target.fileName) {
+                "OpenAPI output file has no name: $target"
+            }
+            val targetIdentity = canonicalParent.resolve(fileName).normalize()
+            require(targetIdentity.startsWith(canonicalRoot)) {
                 "OpenAPI output path resolves outside the selected directory: $target"
+            }
+            require(targetIdentities.add(targetIdentity)) {
+                "Multiple OpenAPI output files resolve to the same physical target: $targetIdentity"
             }
         }
     }
