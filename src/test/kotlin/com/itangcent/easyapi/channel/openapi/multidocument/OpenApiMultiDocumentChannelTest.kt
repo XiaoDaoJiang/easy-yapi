@@ -620,6 +620,63 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
         }
     }
 
+    fun testHandleResultCountsDanglingRootSymlinkAndPreservesItWhenOverwriteDeclined() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-dangling-root")
+        val root = tempDir.resolve("openapi.yaml")
+        val danglingTarget = tempDir.resolve("missing-root.yaml")
+        val fragment = tempDir.resolve("paths/UserController.yaml")
+        val prompts = mutableListOf<String>()
+        try {
+            try {
+                Files.createSymbolicLink(root, danglingTarget)
+            } catch (e: Exception) {
+                if (e is UnsupportedOperationException || e is IOException || e is SecurityException) {
+                    Assume.assumeNoException(e)
+                }
+                throw e
+            }
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                prompts += message
+                Messages.NO
+            })
+
+            var cancelled = false
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "new fragment"),
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (_: CancellationException) {
+                cancelled = true
+            }
+
+            assertTrue("A dangling root symlink should require overwrite confirmation", cancelled)
+            assertEquals(
+                "A dangling root symlink should trigger exactly one overwrite prompt",
+                1,
+                prompts.count { it.contains("existing OpenAPI", ignoreCase = true) },
+            )
+            assertTrue("Declining overwrite must preserve the dangling symlink", Files.isSymbolicLink(root))
+            assertEquals("The dangling symlink target must stay unchanged", danglingTarget, Files.readSymbolicLink(root))
+            assertFalse("Declining overwrite must not create the dangling target", Files.exists(danglingTarget))
+            assertFalse("Declining overwrite must not write additional files", Files.exists(fragment))
+            assertTrue(
+                "Declining overwrite must not leave temporary files",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            Files.deleteIfExists(root)
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
     fun testHandleResultOnlyCountsCurrentTargetsAndKeepsStaleFiles() = runTest {
         val tempDir = Files.createTempDirectory("openapi-multi-stale")
         val prompts = mutableListOf<String>()
@@ -781,6 +838,60 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
             Files.deleteIfExists(pathsLink)
             root.toFile().deleteRecursively()
             outside.toFile().deleteRecursively()
+        }
+    }
+
+    fun testHandleResultRejectsPhysicalRootCollisionThroughDirectorySymlink() = runTest {
+        val root = Files.createTempDirectory("openapi-multi-physical-collision")
+        val rootDocument = root.resolve("openapi.yaml")
+        val pathsLink = root.resolve("paths")
+        val prompts = mutableListOf<String>()
+        try {
+            Files.writeString(rootDocument, "existing root")
+            try {
+                Files.createSymbolicLink(pathsLink, root)
+            } catch (e: Exception) {
+                if (e is UnsupportedOperationException || e is IOException || e is SecurityException) {
+                    Assume.assumeNoException(e)
+                }
+                throw e
+            }
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                prompts += message
+                Messages.YES
+            })
+
+            var rejected = false
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/openapi.yaml" to "aliased additional"),
+                    ),
+                    ChannelConfig.FileConfig(root.toString()),
+                )
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+
+            assertTrue("Physical additional/root target collision should be rejected", rejected)
+            assertTrue(
+                "Physical target validation should fail before overwrite confirmation: $prompts",
+                prompts.none { it.contains("existing OpenAPI", ignoreCase = true) },
+            )
+            assertEquals("Rejected collision must leave the root unchanged", "existing root", Files.readString(rootDocument))
+            assertTrue("Rejected collision must preserve the directory symlink", Files.isSymbolicLink(pathsLink))
+            assertTrue(
+                "Rejected collision must not leave temporary files",
+                Files.walk(root).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            Files.deleteIfExists(pathsLink)
+            root.toFile().deleteRecursively()
         }
     }
 
