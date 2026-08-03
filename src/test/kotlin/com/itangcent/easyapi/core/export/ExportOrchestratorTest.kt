@@ -3,7 +3,7 @@ package com.itangcent.easyapi.core.export
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
-import com.intellij.testFramework.registerServiceInstance
+import com.intellij.testFramework.registerOrReplaceServiceInstance
 import com.itangcent.easyapi.channel.spi.ChannelConfig
 import com.itangcent.easyapi.core.cache.api.ApiIndex
 import com.itangcent.easyapi.core.export.ApiEndpoint
@@ -31,7 +31,7 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
         super.setUp()
         loadTestFiles()
         apiIndex = ApiIndex()
-        project.registerServiceInstance(ApiIndex::class.java, apiIndex)
+        project.registerOrReplaceServiceInstance(ApiIndex::class.java, apiIndex, testRootDisposable)
         runBlocking { apiIndex.updateEndpoints(emptyList()) }
         orchestrator = ExportOrchestrator.getInstance(project)
         previousDialog = try {
