@@ -29,10 +29,12 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.ConcurrentHashMap
 
 /** Exports the baseline OpenAPI document as controller-owned documents. */
@@ -243,9 +245,12 @@ class OpenApiMultiDocumentChannel internal constructor(
         targets: Collection<Path>,
     ): MultiDocumentTargetSnapshot {
         val canonicalRoot = resolveFutureRealPath(rootDirectory)
+        val canonicalRootIdentity = readFileIdentityToken(canonicalRoot)
         val targetIdentities = ArrayList<Path>(targets.size)
         val uniqueTargetIdentities = mutableSetOf<Path>()
+        val parentIdentityTokens = ArrayList<FileIdentityToken?>(targets.size)
         val existingTargets = linkedSetOf<Path>()
+        val existingTargetIdentityTokens = linkedMapOf<Path, FileIdentityToken>()
         targets.forEach { target ->
             val parent = requireNotNull(target.parent) {
                 "OpenAPI output file has no parent directory: $target"
@@ -262,11 +267,46 @@ class OpenApiMultiDocumentChannel internal constructor(
                 "Multiple OpenAPI output files resolve to the same physical target: $targetIdentity"
             }
             targetIdentities.add(targetIdentity)
-            if (Files.exists(target, NOFOLLOW_LINKS)) {
+            parentIdentityTokens.add(readFileIdentityToken(canonicalParent))
+            val existingTargetIdentity = readFileIdentityToken(target)
+            if (existingTargetIdentity != null) {
                 existingTargets.add(target)
+                existingTargetIdentityTokens[target] = existingTargetIdentity
             }
         }
-        return MultiDocumentTargetSnapshot(canonicalRoot, targetIdentities, existingTargets)
+        return MultiDocumentTargetSnapshot(
+            canonicalRoot = canonicalRoot,
+            canonicalRootIdentity = canonicalRootIdentity,
+            targetIdentities = targetIdentities,
+            parentIdentityTokens = parentIdentityTokens,
+            existingTargets = existingTargets,
+            existingTargetIdentityTokens = existingTargetIdentityTokens,
+        )
+    }
+
+    private fun readFileIdentityToken(path: Path): FileIdentityToken? {
+        if (!Files.exists(path, NOFOLLOW_LINKS)) return null
+        val attributes = try {
+            Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        } catch (_: NoSuchFileException) {
+            return null
+        }
+        val fileKey = attributes.fileKey()
+        return if (fileKey != null) {
+            FileIdentityToken(fileKey = fileKey.toString())
+        } else {
+            FileIdentityToken(
+                fallback = listOf(
+                    attributes.isRegularFile,
+                    attributes.isDirectory,
+                    attributes.isSymbolicLink,
+                    attributes.isOther,
+                    attributes.size(),
+                    attributes.lastModifiedTime().toMillis(),
+                    attributes.creationTime().toMillis(),
+                ).joinToString(separator = ":"),
+            )
+        }
     }
 
     private fun resolveFutureRealPath(path: Path): Path {
@@ -334,8 +374,16 @@ class OpenApiMultiDocumentChannel internal constructor(
 
     private data class MultiDocumentTargetSnapshot(
         val canonicalRoot: Path,
+        val canonicalRootIdentity: FileIdentityToken?,
         val targetIdentities: List<Path>,
+        val parentIdentityTokens: List<FileIdentityToken?>,
         val existingTargets: Set<Path>,
+        val existingTargetIdentityTokens: Map<Path, FileIdentityToken>,
+    )
+
+    private data class FileIdentityToken(
+        val fileKey: String? = null,
+        val fallback: String? = null,
     )
 
     private companion object {

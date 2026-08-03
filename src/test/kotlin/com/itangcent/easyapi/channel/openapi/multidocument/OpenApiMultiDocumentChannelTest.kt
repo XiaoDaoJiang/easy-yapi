@@ -411,6 +411,60 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
         }
     }
 
+    fun testHandleResultStopsWhenExistingTargetIsRecreatedDuringConfirmation() = runTest {
+        val tempDir = Files.createTempDirectory("openapi-multi-confirm-target-recreated")
+        val root = tempDir.resolve("openapi.yaml")
+        val fragment = tempDir.resolve("paths/UserController.yaml")
+        val prompts = mutableListOf<String>()
+        try {
+            Files.writeString(root, "existing root")
+            TestDialogManager.setTestDialog(TestDialog { message ->
+                if (message.contains("existing OpenAPI", ignoreCase = true)) {
+                    prompts += message
+                    Files.delete(root)
+                    Files.writeString(root, "replacement-after-confirm")
+                }
+                Messages.YES
+            })
+
+            var failure: IllegalArgumentException? = null
+            try {
+                channel.handleResult(
+                    project,
+                    multiDocumentResult(
+                        format = OpenApiOutputFormat.YAML,
+                        content = "new root",
+                        additionalFiles = linkedMapOf("paths/UserController.yaml" to "generated fragment"),
+                    ),
+                    ChannelConfig.FileConfig(tempDir.toString()),
+                )
+            } catch (e: IllegalArgumentException) {
+                failure = e
+            }
+
+            assertNotNull("A target recreated during confirmation should abort the export", failure)
+            assertTrue(
+                "Failure should explain that output targets changed: ${failure?.message}",
+                failure?.message?.contains("output targets changed", ignoreCase = true) == true,
+            )
+            assertEquals("The recreated target state should still use one confirmation", 1, prompts.size)
+            assertEquals(
+                "Aborted export must preserve the recreated root",
+                "replacement-after-confirm",
+                Files.readString(root),
+            )
+            assertFalse("Aborted export must not write other targets", Files.exists(fragment))
+            assertTrue(
+                "Aborted export must not leave temporary files",
+                Files.walk(tempDir).use { files ->
+                    files.noneMatch { it.fileName.toString().endsWith(".tmp") }
+                },
+            )
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
     fun testHandleResultStopsWhenParentBecomesExternalSymlinkDuringConfirmation() = runTest {
         val root = Files.createTempDirectory("openapi-multi-confirm-parent-symlink")
         val outside = Files.createTempDirectory("openapi-multi-confirm-parent-outside")
