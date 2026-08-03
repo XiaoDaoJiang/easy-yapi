@@ -123,10 +123,10 @@ class OpenApiMultiDocumentChannel internal constructor(
         val rootDirectory = resolveTargetDirectory(project, config)
         withMultiDocumentDirectoryLock(rootDirectory) {
             val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
-            val existingCount = background {
-                validateMultiDocumentTargets(rootDirectory, targets.keys)
-                targets.keys.count { target -> Files.exists(target, NOFOLLOW_LINKS) }
+            val initialSnapshot = background {
+                createMultiDocumentTargetSnapshot(rootDirectory, targets.keys)
             }
+            val existingCount = initialSnapshot.existingTargets.size
             if (existingCount > 0) {
                 val overwrite = swing {
                     Messages.showYesNoDialog(
@@ -142,6 +142,16 @@ class OpenApiMultiDocumentChannel internal constructor(
             }
 
             background {
+                val currentSnapshot = try {
+                    createMultiDocumentTargetSnapshot(rootDirectory, targets.keys)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    throw IllegalArgumentException(TARGETS_CHANGED_MESSAGE, e)
+                }
+                require(currentSnapshot == initialSnapshot) {
+                    TARGETS_CHANGED_MESSAGE
+                }
                 targets.forEach { (target, content) ->
                     writeOutputFile(target, content)
                 }
@@ -228,12 +238,14 @@ class OpenApiMultiDocumentChannel internal constructor(
     }
 
     /** @requires Background context. */
-    private fun validateMultiDocumentTargets(
+    private fun createMultiDocumentTargetSnapshot(
         rootDirectory: Path,
         targets: Collection<Path>,
-    ) {
+    ): MultiDocumentTargetSnapshot {
         val canonicalRoot = resolveFutureRealPath(rootDirectory)
-        val targetIdentities = mutableSetOf<Path>()
+        val targetIdentities = ArrayList<Path>(targets.size)
+        val uniqueTargetIdentities = mutableSetOf<Path>()
+        val existingTargets = linkedSetOf<Path>()
         targets.forEach { target ->
             val parent = requireNotNull(target.parent) {
                 "OpenAPI output file has no parent directory: $target"
@@ -246,10 +258,15 @@ class OpenApiMultiDocumentChannel internal constructor(
             require(targetIdentity.startsWith(canonicalRoot)) {
                 "OpenAPI output path resolves outside the selected directory: $target"
             }
-            require(targetIdentities.add(targetIdentity)) {
+            require(uniqueTargetIdentities.add(targetIdentity)) {
                 "Multiple OpenAPI output files resolve to the same physical target: $targetIdentity"
             }
+            targetIdentities.add(targetIdentity)
+            if (Files.exists(target, NOFOLLOW_LINKS)) {
+                existingTargets.add(target)
+            }
         }
+        return MultiDocumentTargetSnapshot(canonicalRoot, targetIdentities, existingTargets)
     }
 
     private fun resolveFutureRealPath(path: Path): Path {
@@ -315,7 +332,16 @@ class OpenApiMultiDocumentChannel internal constructor(
             error("ALWAYS_ASK must be resolved before multi-document output")
     }
 
+    private data class MultiDocumentTargetSnapshot(
+        val canonicalRoot: Path,
+        val targetIdentities: List<Path>,
+        val existingTargets: Set<Path>,
+    )
+
     private companion object {
+        const val TARGETS_CHANGED_MESSAGE =
+            "OpenAPI output targets changed while awaiting confirmation or write preparation"
+
         // ponytail: process-lifetime map; add ref-count eviction only if directory cardinality becomes measurable.
         val MULTI_DOCUMENT_DIRECTORY_LOCKS = ConcurrentHashMap<Path, Mutex>()
     }
