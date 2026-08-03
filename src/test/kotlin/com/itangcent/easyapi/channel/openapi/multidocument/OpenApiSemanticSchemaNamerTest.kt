@@ -222,6 +222,42 @@ class OpenApiSemanticSchemaNamerTest {
     }
 
     @Test
+    fun testReusesReleasedCandidateNameWithoutFalseConflict() {
+        val operations = arrayOf(
+            operation("/foo", HttpMethod.GET, "com.acme.Bar"),
+            operation("/baz", HttpMethod.GET, "com.acme.Foo"),
+        )
+        val source = document(
+            paths = linkedMapOf(
+                "/foo" to pathItem(HttpMethod.GET, "Foo"),
+                "/baz" to pathItem(HttpMethod.GET, "Baz"),
+            ),
+            schemas = linkedMapOf(
+                "Foo" to SchemaObject(type = "string"),
+                "Baz" to SchemaObject(type = "integer"),
+            ),
+        )
+
+        val result = namer(*operations).rename(source)
+        val reversedSource = document(
+            paths = source.paths.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+            schemas = source.components!!.schemas!!.entries.reversed().associateTo(linkedMapOf()) { it.key to it.value },
+        )
+        val reversed = namer(*operations.reversedArray()).rename(reversedSource)
+
+        assertEquals("Released candidate names should be reusable without a hash", setOf("Bar", "Foo"), result.document.components!!.schemas!!.keys)
+        assertEquals("The renamed Foo component should follow its semantic name", ref("Bar"), responseRef(result.document, "/foo", HttpMethod.GET))
+        assertEquals("The Baz component should reuse the released Foo name", ref("Foo"), responseRef(result.document, "/baz", HttpMethod.GET))
+        assertTrue("Reusing a released candidate name should not warn", result.warnings.isEmpty())
+        assertEquals("Schema insertion order must not change released-name allocation", result.document.components!!.schemas!!.keys, reversed.document.components!!.schemas!!.keys)
+        assertEquals(
+            "Endpoint insertion order must not change released-name references",
+            listOf("/foo", "/baz").associateWith { responseRef(result.document, it, HttpMethod.GET) },
+            listOf("/foo", "/baz").associateWith { responseRef(reversed.document, it, HttpMethod.GET) },
+        )
+    }
+
+    @Test
     fun testReusesSameShapeReservedSchemaWithoutOverwritingMetadata() {
         val existing = objectSchema("id" to SchemaObject(type = "string")).copy(
             description = "keep existing description",
