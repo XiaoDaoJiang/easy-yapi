@@ -124,16 +124,54 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
         assertEquals("Delegate should be called once", 1, delegate.callCount)
     }
 
-    fun testRejectsOwnershipConflictBeforeDelegate() = runTest {
-        val conflictEndpoints = listOf(
-            endpoint("/users/{id:\\d+}", HttpMethod.GET, "com.acme.UserController"),
-            endpoint("/users/{id}", HttpMethod.POST, "com.acme.AdminController"),
+    fun testValidatesOnlySelectedEndpoints() = runTest {
+        val allEndpoints = conflictingEndpoints()
+        val selectedEndpoints = listOf(allEndpoints.first())
+        val selectedDocument = document().let { document ->
+            document.copy(paths = linkedMapOf("/users/{id}" to document.paths.getValue("/users")))
+        }
+        val delegate = RecordingChannel(
+            successResult(
+                OpenApiOutputFormat.JSON,
+                selectedDocument,
+            ),
         )
+
+        val result = OpenApiMultiDocumentChannel(delegate).export(
+            ExportContext(
+                project = project,
+                endpoints = allEndpoints,
+                selectedEndpoints = selectedEndpoints,
+                channelId = "openapi-multi",
+            ),
+        )
+
+        assertTrue("Selecting one owner should succeed, got: $result", result is ExportResult.Success)
+        assertEquals("Delegate should run exactly once for the selected endpoint", 1, delegate.callCount)
+        val metadata = (result as ExportResult.Success).metadata as? OpenApiMultiDocumentExportMetadata
+            ?: throw AssertionError("Success should contain OpenApiMultiDocumentExportMetadata")
+        val rootPaths = parse(metadata.content, OpenApiOutputFormat.JSON).path("paths")
+        assertEquals("Metadata should contain only the selected path", 1, rootPaths.size())
+        assertTrue("Metadata should retain the selected path", rootPaths.has("/users/{id}"))
+        assertEquals(
+            "Metadata should contain only the selected controller fragment",
+            listOf("paths/UserController.json"),
+            metadata.additionalFiles.keys.filter { it.startsWith("paths/") },
+        )
+    }
+
+    fun testRejectsOwnershipConflictBeforeDelegate() = runTest {
+        val conflictEndpoints = conflictingEndpoints()
         val delegate = RecordingChannel(successResult(OpenApiOutputFormat.JSON))
 
         val error = expectError(
             OpenApiMultiDocumentChannel(delegate).export(
-                ExportContext(project = project, endpoints = conflictEndpoints, channelId = "openapi-multi"),
+                ExportContext(
+                    project = project,
+                    endpoints = conflictEndpoints,
+                    selectedEndpoints = conflictEndpoints,
+                    channelId = "openapi-multi",
+                ),
             ),
         )
 
@@ -267,11 +305,14 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
         channelConfig = OpenApiConfig(outputFormat = OpenApiOutputFormat.JSON),
     )
 
-    private fun successResult(format: OpenApiOutputFormat) = ExportResult.Success(
+    private fun successResult(
+        format: OpenApiOutputFormat,
+        document: OpenApiDocument = document(),
+    ) = ExportResult.Success(
         count = 7,
         target = "delegate-target",
         metadata = OpenApiExportMetadata(
-            document = document(),
+            document = document,
             outputFormat = format,
             content = "delegate-single-document",
         ),
@@ -290,6 +331,11 @@ class OpenApiMultiDocumentChannelTest : EasyApiLightCodeInsightFixtureTestCase()
     private fun endpoints() = listOf(
         endpoint("/users", HttpMethod.GET, "com.acme.UserController"),
         endpoint("/admins", HttpMethod.GET, "com.acme.AdminController"),
+    )
+
+    private fun conflictingEndpoints() = listOf(
+        endpoint("/users/{id:\\d+}", HttpMethod.GET, "com.acme.UserController"),
+        endpoint("/users/{id}", HttpMethod.POST, "com.acme.AdminController"),
     )
 
     private fun endpoint(path: String, method: HttpMethod, className: String) = ApiEndpoint(

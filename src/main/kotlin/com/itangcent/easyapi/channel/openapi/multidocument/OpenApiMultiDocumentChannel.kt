@@ -38,7 +38,7 @@ class OpenApiMultiDocumentChannel internal constructor(
 
     override suspend fun export(context: ExportContext): ExportResult {
         val transformer = try {
-            OpenApiMultiDocumentTransformer(context.endpoints)
+            OpenApiMultiDocumentTransformer(context.endpointsToExport)
         } catch (error: IllegalArgumentException) {
             return ExportResult.Error(
                 error.message ?: "OpenAPI multi-document path ownership validation failed",
