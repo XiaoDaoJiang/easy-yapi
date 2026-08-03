@@ -1,11 +1,14 @@
 package com.itangcent.easyapi.channel.openapi.multidocument
 
+import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper
+import com.google.gson.GsonBuilder
 import com.itangcent.easyapi.channel.openapi.ComponentsObject
 import com.itangcent.easyapi.channel.openapi.InfoObject
 import com.itangcent.easyapi.channel.openapi.MediaTypeObject
 import com.itangcent.easyapi.channel.openapi.OpenApiDocument
 import com.itangcent.easyapi.channel.openapi.OpenApiOutputFormat
-import com.itangcent.easyapi.channel.openapi.OpenApiSerializer
 import com.itangcent.easyapi.channel.openapi.OperationObject
 import com.itangcent.easyapi.channel.openapi.ParameterObject
 import com.itangcent.easyapi.channel.openapi.PathItemObject
@@ -136,12 +139,28 @@ class OpenApiMultiDocumentTransformerTest {
             source.paths.getValue("/users").get,
             fragment.paths.getValue("/users").get,
         )
-        val fragmentJson = OpenApiSerializer.toJson(fragment)
-        val fragmentYaml = OpenApiSerializer.toYaml(fragment)
+        val gson = GsonBuilder().disableHtmlEscaping().create()
+        val yamlMapper = YAMLMapper.builder()
+            .serializationInclusion(JsonInclude.Include.NON_NULL)
+            .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
+            .build()
+        val fragmentJson = gson.toJson(fragment)
+        val fragmentYaml = yamlMapper.writeValueAsString(fragment)
         assertTrue("Gson should emit the controller wire extension", fragmentJson.contains("\"x-java-controller\""))
         assertTrue("Jackson should emit the controller wire extension", fragmentYaml.contains("x-java-controller:"))
         assertFalse("Null folder extension should be omitted", fragmentJson.contains("x-easyapi-folder"))
         assertFalse("Null unresolved extension should be omitted", fragmentYaml.contains("x-easyapi-unresolved"))
+
+        val externalReference = result.rootDocument.paths.getValue("/users")
+        val referenceJson = gson.toJson(externalReference)
+        val referenceYaml = yamlMapper.writeValueAsString(externalReference)
+        assertTrue("Gson should emit ref using the OpenAPI wire name", referenceJson.contains("\"\$ref\""))
+        assertFalse("Gson should not emit the Kotlin ref property name", referenceJson.contains("\"ref\""))
+        assertTrue("Jackson should emit ref using the OpenAPI wire name", referenceYaml.contains("\$ref:"))
+        assertFalse(
+            "Jackson should not emit the Kotlin ref property name",
+            Regex("(?m)^ref:").containsMatchIn(referenceYaml),
+        )
     }
 
     @Test
