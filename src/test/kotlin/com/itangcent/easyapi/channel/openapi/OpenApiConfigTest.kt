@@ -8,13 +8,13 @@ import org.junit.Test
 import kotlin.reflect.full.memberProperties
 
 /**
- * Plain-JUnit tests for [OpenApiConfig], [OpenApiOutputFormat],
- * [OpenApiDocumentMode], and [OpenApiConfig.parseOutputFormat].
+ * Plain-JUnit tests for [OpenApiConfig], [OpenApiOutputFormat], and
+ * [OpenApiConfig.parseOutputFormat].
  *
- * Pins the contract that `OpenApiConfig` carries the output format and
- * document mode. The v1 `infoTitle` / `infoVersion` / `infoDescription` /
- * `serverUrl` fields were removed — those values vary per project and belong
- * in rule scripts.
+ * Pins the contract that `OpenApiConfig` carries **only**
+ * [OpenApiConfig.outputFormat] (default `ALWAYS_ASK`). The v1 `infoTitle` /
+ * `infoVersion` / `infoDescription` / `serverUrl` fields were removed — those
+ * values vary per project and belong in rule scripts.
  *
  * The v1 `OpenApiSettings.asOpenApiConfig` extension function was removed
  * (no fields to merge from settings — settings only carries `outputFormat`).
@@ -27,22 +27,6 @@ class OpenApiConfigTest {
         // JSON / YAML at export time.
         val cfg = OpenApiConfig()
         assertEquals(OpenApiOutputFormat.ALWAYS_ASK, cfg.outputFormat)
-    }
-
-    @Test
-    fun `default documentMode is SINGLE_FILE`() {
-        assertEquals(OpenApiDocumentMode.SINGLE_FILE, OpenApiConfig().documentMode)
-    }
-
-    @Test
-    fun `documentMode enum contains single and controller modes`() {
-        assertEquals(
-            listOf(
-                OpenApiDocumentMode.SINGLE_FILE,
-                OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
-            ),
-            OpenApiDocumentMode.values().toList(),
-        )
     }
 
     @Test
@@ -67,28 +51,18 @@ class OpenApiConfigTest {
     }
 
     @Test
-    fun `config has outputFormat and documentMode properties`() {
+    fun `config has only outputFormat property`() {
         // Removed infoTitle / infoVersion / infoDescription /
-        // serverUrl. The data class should carry only export format and
-        // document layout.
-        val properties = OpenApiConfig::class.memberProperties.map { it.name }.toSet()
-        assertEquals(setOf("outputFormat", "documentMode"), properties)
+        // serverUrl. The data class should have exactly one declared
+        // property — outputFormat.
+        val properties = OpenApiConfig::class.memberProperties.map { it.name }
+        assertEquals(listOf("outputFormat"), properties)
     }
 
     @Test
     fun `constructed config round-trips outputFormat`() {
         val cfg = OpenApiConfig(outputFormat = OpenApiOutputFormat.YAML)
         assertEquals(OpenApiOutputFormat.YAML, cfg.outputFormat)
-    }
-
-    @Test
-    fun `constructed config round-trips multi document mode`() {
-        val cfg = OpenApiConfig(
-            outputFormat = OpenApiOutputFormat.YAML,
-            documentMode = OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER,
-        )
-        assertEquals(OpenApiOutputFormat.YAML, cfg.outputFormat)
-        assertEquals(OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER, cfg.documentMode)
     }
 
     // ─── parseOutputFormat — case-insensitive parsing + fallback ─────────

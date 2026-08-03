@@ -21,20 +21,8 @@ import com.itangcent.easyapi.core.rule.engine.RuleEngine
 import com.itangcent.easyapi.core.settings.Settings
 import com.itangcent.easyapi.core.settings.settings
 import com.itangcent.easyapi.core.settings.ui.SettingsPanel
-import com.itangcent.easyapi.core.util.file.FileSelectHelper
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.File
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.LinkOption.NOFOLLOW_LINKS
-import java.nio.file.Path
-import java.nio.file.Paths
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 
 /**
@@ -58,31 +46,30 @@ import kotlin.reflect.KClass
  *    options-panel > persistent settings > built-in default (`ALWAYS_ASK`).
  *    When `ALWAYS_ASK` is selected, [promptFormat] prompts the user on EDT
  *    — throws [CancellationException] on cancel.
- * 3. In multi-document mode, validate normalized path ownership before the
- *    formatter can collapse methods from different controllers.
- * 4. Resolve the rule-resolved [OpenApiEnvelope] via
+ * 3. Resolve the rule-resolved [OpenApiEnvelope] via
  *    [resolveRuleBasedEnvelope] — document-level metadata (`info.title`,
  *    `info.version`, `info.description`, `server.url`) come from rule scripts
  *    only. Built-in defaults: `infoTitle = projectName ?: "API"`,
  *    `infoVersion = "1.0.0"`, others `null`.
- * 5. Build the [OpenApiDocument] via [OpenApiFormatter] (pure).
- * 6. Fire the `openapi.format.after` event — scripts can
+ * 4. Build the [OpenApiDocument] via [OpenApiFormatter] (pure).
+ * 5. Fire the `openapi.format.after` event — scripts can
  *    mutate the in-memory document before serialization. The document is
  *    exposed via the rule context extension `"document"`.
- * 7. Serialize the full document, or split it after the hook and serialize
- *    the root plus additional documents.
- * 8. Wrap the document + format + pre-serialized content in
+ * 6. Serialize via [OpenApiSerializer] — JSON (Gson) or YAML (Jackson
+ *    `YAMLMapper`) depending on the effective format.
+ * 7. Wrap the document + format + pre-serialized content in
  *    [OpenApiExportMetadata] and return `ExportResult.Success`.
  *
  * ## handleResult
  *
- * Writes the pre-serialized content to the user-chosen file or directory using
- * `background { }` for the I/O and `swing { }` for dialogs (mirrors
- * [com.itangcent.easyapi.channel.markdown.MarkdownChannel.handleResult]).
+ * Writes the pre-serialized content to the user-chosen file using
+ * `background { }` for the I/O and `swing { }` for the success dialog (mirrors
+ * [com.itangcent.easyapi.channel.markdown.MarkdownChannel.handleResult] and
+ * [com.itangcent.easyapi.channel.hoppscotch.HoppscotchChannel.handleFileExport]).
  *
  * Default file name is `openapi.json` or `openapi.yaml` based on the format.
- * Throws [CancellationException] when the user cancels target selection or a
- * multi-document overwrite.
+ * Throws [CancellationException] when the user cancels the save dialog so the
+ * orchestrator can propagate the cancellation.
  *
  * ## Logging
  *
@@ -153,74 +140,30 @@ class OpenApiChannel : Channel, IdeaLog {
             else -> typedFormat
         }
 
-        // 3. Validate multi-document ownership before formatter path collapse.
-        val multiDocumentSplitter =
-            if (typed.documentMode == OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER) {
-                try {
-                    OpenApiMultiDocumentSplitter(httpEndpoints)
-                } catch (e: IllegalArgumentException) {
-                    LOG.warn("OpenAPI multi-document path ownership validation failed", e)
-                    return ExportResult.Error(
-                        e.message ?: "OpenAPI multi-document path ownership validation failed"
-                    )
-                }
-            } else {
-                null
-            }
-
-        // 4. Resolve envelope metadata from rules only.
+        // 3. Resolve envelope metadata from rules only.
         //    No settings/options-panel fallback for these fields.
         val envelope = resolveRuleBasedEnvelope(project, project.name)
 
-        // 5. Build the document (pure — no rule engine, no I/O).
+        // 4. Build the document (pure — no rule engine, no I/O).
         val formatter = OpenApiFormatter(project)
         val document = formatter.format(httpEndpoints, envelope)
 
-        // 6. Fire openapi.format.after event.
+        // 5. Fire openapi.format.after event.
         //    Scripts can mutate the in-memory document before serialization.
         fireFormatAfterEvent(project, httpEndpoints, document)
 
-        if (multiDocumentSplitter == null) {
-            return ExportResult.Success(
-                count = httpEndpoints.size,
-                target = "OpenAPI",
-                metadata = OpenApiExportMetadata(
-                    document,
-                    effectiveFormat,
-                    serialize(document, effectiveFormat),
-                ),
-            )
+        // 6. Serialize. ALWAYS_ASK is already resolved above.
+        val content = when (effectiveFormat) {
+            OpenApiOutputFormat.JSON -> OpenApiSerializer.toJson(document)
+            OpenApiOutputFormat.YAML -> OpenApiSerializer.toYaml(document)
+            OpenApiOutputFormat.ALWAYS_ASK -> error("unreachable — ALWAYS_ASK resolved at step 2")
         }
-
-        val multiDocument = multiDocumentSplitter.split(document, effectiveFormat)
-        val content = serialize(multiDocument.rootDocument, effectiveFormat)
-        val additionalFiles = multiDocument.additionalDocuments.mapValuesTo(linkedMapOf()) { (_, value) ->
-            serialize(value, effectiveFormat)
-        }
-        multiDocument.warnings.forEach(LOG::warn)
 
         return ExportResult.Success(
             count = httpEndpoints.size,
             target = "OpenAPI",
-            metadata = OpenApiExportMetadata(
-                document = document,
-                outputFormat = effectiveFormat,
-                content = content,
-                documentMode = typed.documentMode,
-                additionalFiles = additionalFiles,
-                pathFragmentCount = multiDocument.pathFragmentCount,
-                schemaCount = multiDocument.schemaCount,
-                unresolvedPathCount = multiDocument.unresolvedPathCount,
-                warnings = multiDocument.warnings,
-            ),
+            metadata = OpenApiExportMetadata(document, effectiveFormat, content),
         )
-    }
-
-    private fun serialize(value: Any, format: OpenApiOutputFormat): String = when (format) {
-        OpenApiOutputFormat.JSON -> OpenApiSerializer.toJson(value)
-        OpenApiOutputFormat.YAML -> OpenApiSerializer.toYaml(value)
-        OpenApiOutputFormat.ALWAYS_ASK ->
-            error("unreachable — ALWAYS_ASK resolved before serialization")
     }
 
     // ─── ALWAYS_ASK prompt ────────────────────────────────────────────
@@ -356,21 +299,6 @@ class OpenApiChannel : Channel, IdeaLog {
     ): Boolean {
         val metadata = result.metadata as? OpenApiExportMetadata ?: return false
 
-        return when (metadata.documentMode) {
-            OpenApiDocumentMode.SINGLE_FILE ->
-                handleSingleFileResult(project, result, config, metadata)
-            OpenApiDocumentMode.MULTI_FILE_BY_CONTROLLER ->
-                handleMultiDocumentResult(project, result, config, metadata)
-        }
-    }
-
-    /** @requires Background for file I/O and EDT for dialogs. */
-    private suspend fun handleSingleFileResult(
-        project: Project,
-        result: ExportResult.Success,
-        config: ChannelConfig,
-        metadata: OpenApiExportMetadata,
-    ): Boolean {
         val defaultFileName = defaultFileName(metadata.outputFormat)
         val targetFile = resolveTargetFile(project, config, defaultFileName)
             ?: throw CancellationException("User cancelled file selection")
@@ -390,191 +318,6 @@ class OpenApiChannel : Channel, IdeaLog {
         return true
     }
 
-    /** @requires Background for file I/O and EDT for dialogs. */
-    private suspend fun handleMultiDocumentResult(
-        project: Project,
-        result: ExportResult.Success,
-        config: ChannelConfig,
-        metadata: OpenApiExportMetadata,
-    ): Boolean {
-        val rootDirectory = resolveTargetDirectory(project, config)
-        withMultiDocumentDirectoryLock(rootDirectory) {
-            val targets = resolveMultiDocumentTargets(rootDirectory, metadata)
-            val existingCount = background { targets.keys.count(Files::exists) }
-            if (existingCount > 0) {
-                val overwrite = swing {
-                    Messages.showYesNoDialog(
-                        project,
-                        "Overwrite $existingCount existing OpenAPI files?",
-                        "Overwrite OpenAPI Files",
-                        Messages.getQuestionIcon(),
-                    ) == Messages.YES
-                }
-                if (!overwrite) {
-                    throw CancellationException("User cancelled OpenAPI file overwrite")
-                }
-            }
-
-            background {
-                validateMultiDocumentTargets(rootDirectory, targets.keys)
-                targets.forEach { (target, content) ->
-                    writeOutputFile(target, content)
-                }
-            }
-        }
-        LOG.info("OpenAPI multi-document export completed: $rootDirectory")
-
-        val message = buildString {
-            appendLine("Successfully exported ${result.count} endpoints to $rootDirectory")
-            appendLine("Path fragments: ${metadata.pathFragmentCount}")
-            appendLine("Schemas: ${metadata.schemaCount}")
-            append("Unresolved paths: ${metadata.unresolvedPathCount}")
-            if (metadata.warnings.isNotEmpty()) {
-                appendLine()
-                appendLine()
-                appendLine("Warnings:")
-                append(metadata.warnings.joinToString(separator = "\n"))
-            }
-        }
-        swing {
-            if (metadata.warnings.isEmpty()) {
-                Messages.showInfoMessage(project, message, "Export API")
-            } else {
-                Messages.showWarningDialog(project, message, "Export API")
-            }
-        }
-        return true
-    }
-
-    internal suspend fun <T> withMultiDocumentDirectoryLock(
-        rootDirectory: Path,
-        block: suspend () -> T,
-    ): T {
-        val canonicalRoot = background { resolveFutureRealPath(rootDirectory) }
-        val directoryMutex = MULTI_DOCUMENT_DIRECTORY_LOCKS.computeIfAbsent(canonicalRoot) { Mutex() }
-        return directoryMutex.withLock { block() }
-    }
-
-    /** @requires EDT when the configured output directory is absent. */
-    private suspend fun resolveTargetDirectory(
-        project: Project,
-        config: ChannelConfig,
-    ): Path {
-        val configuredDirectory = (config as? ChannelConfig.FileConfig)
-            ?.outputDir
-            ?.takeIf { it.isNotBlank() }
-        if (configuredDirectory != null) {
-            return Paths.get(configuredDirectory).toAbsolutePath().normalize()
-        }
-
-        val selected = swing {
-            FileSelectHelper.getInstance(project)
-                .selectDirectory("Select OpenAPI Output Directory", project)
-        } ?: throw CancellationException("User cancelled directory selection")
-        return Paths.get(selected.path).toAbsolutePath().normalize()
-    }
-
-    private fun resolveMultiDocumentTargets(
-        rootDirectory: Path,
-        metadata: OpenApiExportMetadata,
-    ): LinkedHashMap<Path, String> {
-        val root = rootDirectory.toAbsolutePath().normalize()
-        val targets = linkedMapOf<Path, String>()
-        metadata.additionalFiles.forEach { (relativePath, content) ->
-            val relative = Paths.get(relativePath)
-            require(!relative.isAbsolute) {
-                "OpenAPI output path must be relative: $relativePath"
-            }
-            val target = root.resolve(relative).normalize()
-            require(target.startsWith(root)) {
-                "OpenAPI output path escapes the selected directory: $relativePath"
-            }
-            require(!targets.containsKey(target)) {
-                "Multiple OpenAPI output files resolve to the same target: $target"
-            }
-            targets[target] = content
-        }
-        val rootTarget = root.resolve(defaultFileName(metadata.outputFormat)).normalize()
-        require(!targets.containsKey(rootTarget)) {
-            "OpenAPI additional file conflicts with the root document: $rootTarget"
-        }
-        targets[rootTarget] = metadata.content
-        return targets
-    }
-
-    /** @requires Background context. */
-    private fun validateMultiDocumentTargets(
-        rootDirectory: Path,
-        targets: Collection<Path>,
-    ) {
-        val canonicalRoot = resolveFutureRealPath(rootDirectory)
-        targets.forEach { target ->
-            val parent = requireNotNull(target.parent) {
-                "OpenAPI output file has no parent directory: $target"
-            }
-            val canonicalParent = resolveFutureRealPath(parent)
-            require(canonicalParent.startsWith(canonicalRoot)) {
-                "OpenAPI output path resolves outside the selected directory: $target"
-            }
-        }
-    }
-
-    private fun resolveFutureRealPath(path: Path): Path {
-        var existingAncestor = path.toAbsolutePath().normalize()
-        val missingSegments = ArrayDeque<Path>()
-        while (!Files.exists(existingAncestor, NOFOLLOW_LINKS)) {
-            missingSegments.addFirst(
-                requireNotNull(existingAncestor.fileName) {
-                    "Cannot resolve OpenAPI output path: $path"
-                }
-            )
-            existingAncestor = requireNotNull(existingAncestor.parent) {
-                "Cannot find an existing ancestor for OpenAPI output path: $path"
-            }
-        }
-
-        var resolved = existingAncestor.toRealPath()
-        missingSegments.forEach { segment ->
-            resolved = resolved.resolve(segment)
-        }
-        return resolved.normalize()
-    }
-
-    /** @requires Background context. */
-    private fun writeOutputFile(target: Path, content: String) {
-        var temporaryFile: Path? = null
-        var failure: Throwable? = null
-        try {
-            val parent = requireNotNull(target.parent) {
-                "OpenAPI output file has no parent directory: $target"
-            }
-            Files.createDirectories(parent)
-            temporaryFile = Files.createTempFile(parent, ".easyapi-openapi-", ".tmp")
-            Files.writeString(temporaryFile, content, UTF_8)
-            try {
-                Files.move(temporaryFile, target, ATOMIC_MOVE, REPLACE_EXISTING)
-            } catch (e: AtomicMoveNotSupportedException) {
-                LOG.info("Atomic move is not supported for OpenAPI output file: $target", e)
-                Files.move(temporaryFile, target, REPLACE_EXISTING)
-            }
-        } catch (e: Exception) {
-            failure = e
-        } finally {
-            temporaryFile?.let { temp ->
-                try {
-                    Files.deleteIfExists(temp)
-                } catch (e: Exception) {
-                    failure?.addSuppressed(e) ?: run { failure = e }
-                }
-            }
-        }
-
-        failure?.let { error ->
-            LOG.warn("Failed to write OpenAPI output file: $target", error)
-            throw IllegalStateException("Failed to write OpenAPI output file: $target", error)
-        }
-    }
-
     /**
      * Default output file name for the given [format].
      */
@@ -582,11 +325,6 @@ class OpenApiChannel : Channel, IdeaLog {
         OpenApiOutputFormat.JSON -> "openapi.json"
         OpenApiOutputFormat.YAML -> "openapi.yaml"
         OpenApiOutputFormat.ALWAYS_ASK -> error("unreachable — ALWAYS_ASK resolved at export step 2")
-    }
-
-    private companion object {
-        // ponytail: process-lifetime map; add ref-count eviction only if directory cardinality becomes measurable.
-        val MULTI_DOCUMENT_DIRECTORY_LOCKS = ConcurrentHashMap<Path, Mutex>()
     }
 
     /**
