@@ -140,6 +140,119 @@ class OpenApiSemanticSchemaNamerTest {
     }
 
     @Test
+    fun testPreservesNumericSuffixWhenNamingGeneratedRootFromOperationId() {
+        val result = namer(
+            operation("/load", HttpMethod.GET, responseType = null, methodName = null),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/load" to pathItem(HttpMethod.GET, "GeneratedSchema50", operationId = "load-2"),
+                ),
+                schemas = linkedMapOf(
+                    "GeneratedSchema50" to objectSchema("id" to SchemaObject(type = "string")),
+                ),
+            ),
+        )
+
+        assertEquals("Wire operation collision suffix should remain meaningful", setOf("load_2_Response"), result.document.components!!.schemas!!.keys)
+        assertEquals("Operation response should use the suffix-preserving name", ref("load_2_Response"), responseRef(result.document, "/load", HttpMethod.GET))
+    }
+
+    @Test
+    fun testKeepsExistingSchemaWhenItOccupiesAHashedCandidateName() {
+        val operations = arrayOf(
+            operation("/first", HttpMethod.GET, "com.first.Collision"),
+            operation("/second", HttpMethod.GET, "com.second.Collision"),
+        )
+        val candidateSchemas = linkedMapOf(
+            "FirstCollision" to SchemaObject(type = "string"),
+            "SecondCollision" to SchemaObject(type = "integer"),
+        )
+        val paths = linkedMapOf(
+            "/first" to pathItem(HttpMethod.GET, "FirstCollision"),
+            "/second" to pathItem(HttpMethod.GET, "SecondCollision"),
+        )
+        val occupiedName = namer(*operations).rename(document(paths, candidateSchemas))
+            .document.components!!.schemas!!.keys.single { it.startsWith("Collision__") }
+        val existing = SchemaObject(
+            type = "boolean",
+            description = "existing schema must survive",
+            example = true,
+        )
+        val source = document(
+            paths = LinkedHashMap(paths).apply {
+                put("/existing", pathItem(HttpMethod.GET, occupiedName))
+            },
+            schemas = LinkedHashMap(candidateSchemas).apply {
+                put(occupiedName, existing)
+            },
+        )
+
+        val result = namer(*operations).rename(source)
+        val schemas = result.document.components!!.schemas!!
+        val candidateRefs = setOf(
+            responseRef(result.document, "/first", HttpMethod.GET),
+            responseRef(result.document, "/second", HttpMethod.GET),
+        )
+
+        assertEquals("Reserved schema content must not be overwritten", existing, schemas.getValue(occupiedName))
+        assertEquals("Existing operation reference should keep its meaning", ref(occupiedName), responseRef(result.document, "/existing", HttpMethod.GET))
+        assertFalse("Candidate response must not point at the conflicting existing schema", ref(occupiedName) in candidateRefs)
+        assertTrue("Conflicting candidate should receive a stable derived name", candidateRefs.filterNotNull().any { it.startsWith(ref("${occupiedName}__")) })
+        assertTrue("Different-shape reserved collision should produce a warning", result.warnings.any { it.contains(occupiedName) && it.contains("conflict", ignoreCase = true) })
+    }
+
+    @Test
+    fun testReusesSameShapeReservedSchemaWithoutOverwritingMetadata() {
+        val existing = objectSchema("id" to SchemaObject(type = "string")).copy(
+            description = "keep existing description",
+            example = linkedMapOf("id" to "existing"),
+        )
+        val candidate = objectSchema("id" to SchemaObject(type = "string")).copy(
+            description = "candidate description",
+            example = linkedMapOf("id" to "candidate"),
+        )
+        val result = namer(
+            operation("/candidate", HttpMethod.GET, "com.acme.ExistingResponse"),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/candidate" to pathItem(HttpMethod.GET, "CandidateSource"),
+                    "/existing" to pathItem(HttpMethod.GET, "ExistingResponse"),
+                ),
+                schemas = linkedMapOf(
+                    "CandidateSource" to candidate,
+                    "ExistingResponse" to existing,
+                ),
+            ),
+        )
+
+        assertEquals("Same-shape reserved schema should be reused with its metadata intact", existing, result.document.components!!.schemas!!.getValue("ExistingResponse"))
+        assertEquals("Candidate should point at the reused schema", ref("ExistingResponse"), responseRef(result.document, "/candidate", HttpMethod.GET))
+        assertEquals("Existing reference should remain unchanged", ref("ExistingResponse"), responseRef(result.document, "/existing", HttpMethod.GET))
+    }
+
+    @Test
+    fun testKeepsGeneratedRootAndWarnsWhenOperationIdIsBlank() {
+        val result = namer(
+            operation("/blank", HttpMethod.GET, responseType = null, methodName = null),
+        ).rename(
+            document(
+                paths = linkedMapOf(
+                    "/blank" to pathItem(HttpMethod.GET, "GeneratedSchema51", operationId = "   "),
+                ),
+                schemas = linkedMapOf(
+                    "GeneratedSchema51" to objectSchema("id" to SchemaObject(type = "string")),
+                ),
+            ),
+        )
+
+        assertTrue("Blank operation context should not invent a semantic name", "GeneratedSchema51" in result.document.components!!.schemas!!)
+        assertEquals("Unresolved generated response should keep its original reference", ref("GeneratedSchema51"), responseRef(result.document, "/blank", HttpMethod.GET))
+        assertTrue("Unresolved generated root should warn", result.warnings.any { it.contains("GeneratedSchema51") })
+    }
+
+    @Test
     fun testClonesOneSharedComponentForDifferentOperationResponseTypes() {
         val result = namer(
             operation("/alpha", HttpMethod.GET, "com.acme.AlphaResponse"),

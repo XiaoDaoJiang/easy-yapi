@@ -33,7 +33,8 @@ internal class OpenApiSemanticSchemaNamer(
             candidates += Candidate(oldName, semanticName, canonicalStructure(oldName, schemas))
         }
         val distinctCandidates = candidates.distinct()
-        val finalNames = allocateFinalNames(distinctCandidates, schemas)
+        val allocationWarnings = mutableListOf<String>()
+        val finalNames = allocateFinalNames(distinctCandidates, schemas, allocationWarnings)
         val finalNamesByOld = distinctCandidates.groupBy(Candidate::oldName).mapValues { (_, values) ->
             values.mapTo(sortedSetOf()) { finalNames.getValue(it) }
         }
@@ -48,6 +49,12 @@ internal class OpenApiSemanticSchemaNamer(
         }
         for ((finalName, sameTarget) in distinctCandidates.groupBy { finalNames.getValue(it) }.toSortedMap()) {
             val source = sameTarget.minBy(Candidate::oldName)
+            if (finalName in rewrittenSchemas) {
+                check(canonicalStructure(finalName, schemas) == source.canonical) {
+                    "OpenAPI schema allocation attempted to overwrite '$finalName' with a different shape"
+                }
+                continue
+            }
             rewrittenSchemas[finalName] = rewriteSchema(
                 schemas.getValue(source.oldName),
                 globalRename,
@@ -67,20 +74,22 @@ internal class OpenApiSemanticSchemaNamer(
         val rewrittenPaths = document.paths.mapValuesTo(linkedMapOf()) { (path, pathItem) ->
             rewritePathItem(path, pathItem, targetByOperationAndOld, globalRename)
         }
-        val warnings = schemas.keys
-            .asSequence()
+        val warnings = linkedSetOf<String>()
+        warnings.addAll(allocationWarnings)
+        schemas.keys
             .filterNot(renamedOldNames::contains)
             .filter { GENERATED_NAME.matches(it) || LEGACY_COLLISION_NAME.matches(it) }
             .sorted()
-            .map { name -> "OpenAPI schema '$name' has an unresolved generated or collision name; kept unchanged" }
-            .toList()
+            .forEach { name ->
+                warnings += "OpenAPI schema '$name' has an unresolved generated or collision name; kept unchanged"
+            }
 
         return SchemaRenameResult(
             document.copy(
                 paths = rewrittenPaths,
                 components = ComponentsObject(rewrittenSchemas),
             ),
-            warnings,
+            warnings.toList(),
         )
     }
 
@@ -102,7 +111,7 @@ internal class OpenApiSemanticSchemaNamer(
             val oldName = refs.singleOrNull() ?: return@mapNotNull null
             val semanticName = semanticName(info.responseType)
                 ?: if (GENERATED_NAME.matches(oldName)) {
-                    semanticName(operation.operationId)?.let { "${it}_Response" }
+                    wireName(operation.operationId)?.let { "${it}_Response" }
                 } else {
                     null
                 }
@@ -156,28 +165,63 @@ internal class OpenApiSemanticSchemaNamer(
     private fun allocateFinalNames(
         candidates: List<Candidate>,
         schemas: Map<String, SchemaObject>,
+        warnings: MutableCollection<String>,
     ): Map<Candidate, String> {
         val renamedOldNames = candidates.mapTo(mutableSetOf(), Candidate::oldName)
         val reserved = schemas.keys
             .filterNot(renamedOldNames::contains)
             .associateWith { canonicalStructure(it, schemas) }
+        val usedNames = reserved.toMutableMap()
         val result = mutableMapOf<Candidate, String>()
 
         for ((baseName, sameName) in candidates.groupBy(Candidate::semanticName).toSortedMap()) {
             val byShape = sameName.groupBy(Candidate::canonical).toSortedMap()
-            val plainShape = byShape.keys.firstOrNull { canonical ->
-                reserved[baseName]?.let { it == canonical } != false
+            val reservedBaseShape = reserved[baseName]
+            val plainShape = when {
+                baseName !in reserved -> byShape.keys.firstOrNull()
+                reservedBaseShape in byShape -> reservedBaseShape
+                else -> {
+                    warnings += "OpenAPI schema name '$baseName' conflicts with an existing different shape; using hashed semantic names"
+                    null
+                }
             }
             for ((canonical, sameShape) in byShape) {
-                val finalName = if (canonical == plainShape) {
+                val preferredName = if (canonical == plainShape) {
                     baseName
                 } else {
                     "${baseName}__${stableHash(canonical)}"
                 }
+                val finalName = availableName(preferredName, canonical, usedNames, warnings)
                 sameShape.forEach { result[it] = finalName }
             }
         }
         return result
+    }
+
+    private fun availableName(
+        preferredName: String,
+        canonical: String,
+        usedNames: MutableMap<String, String>,
+        warnings: MutableCollection<String>,
+    ): String {
+        val existingShape = usedNames[preferredName]
+        if (existingShape == null) {
+            usedNames[preferredName] = canonical
+            return preferredName
+        }
+        if (existingShape == canonical) return preferredName
+
+        var suffix = 2
+        while (true) {
+            val candidate = "${preferredName}__$suffix"
+            val candidateShape = usedNames[candidate]
+            if (candidateShape == null || candidateShape == canonical) {
+                if (candidateShape == null) usedNames[candidate] = canonical
+                warnings += "OpenAPI schema name '$preferredName' conflicts with an existing different shape; allocated '$candidate'"
+                return candidate
+            }
+            suffix++
+        }
     }
 
     private fun rewritePathItem(
@@ -325,6 +369,12 @@ internal class OpenApiSemanticSchemaNamer(
             .trim('_')
             .takeIf(String::isNotEmpty)
     }
+
+    private fun wireName(value: String): String? = value
+        .replace(NON_NAME_CHARACTER, "_")
+        .replace(REPEATED_UNDERSCORE, "_")
+        .trim('_')
+        .takeIf(String::isNotEmpty)
 
     private fun appendName(prefix: String, part: String): String {
         val cleanPart = part
