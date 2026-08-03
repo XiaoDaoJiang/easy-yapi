@@ -162,16 +162,19 @@ YAML output uses the following shallow layout; JSON uses the same layout with
 ├── paths/
 │   ├── UserController.yaml
 │   └── Unresolved.yaml
-└── schemas/
-    └── schemas.yaml
+└── schemas/                       # optional
+    └── schemas.yaml               # only with component schemas
 ```
 
 Each Controller gets one Paths fragment rather than one file per API. Paths
 without a Controller use their folder as a fallback and otherwise go to
-`paths/Unresolved.*`. Schemas stay together in `schemas/schemas.yaml|json`, and
-the root `openapi.yaml|json` uses external `$ref` links. Schema names are
-semantic; a stable eight-hex-character short hash is added only when the same
-name represents genuinely different structures.
+`paths/Unresolved.*`. When component schemas exist, they stay together in the
+optional `schemas/schemas.yaml|json`; otherwise that directory is not created.
+The root `openapi.yaml|json` uses external `$ref` links. Schema names are
+semantic when they can be reliably derived from endpoint type or operation
+context; a stable eight-hex-character short hash is added only when the same
+name represents genuinely different structures. When no reliable mapping is
+available, the existing name is preserved and a warning is emitted.
 
 The multi-document channel adds three diagnostic extensions:
 
@@ -182,11 +185,15 @@ The multi-document channel adds three diagnostic extensions:
 Before writing, the exporter asks once before overwriting generated targets and
 aborts if their state changes during confirmation. Files are replaced through
 temporary siblings; stale or unrelated files are not deleted. A normalized
-path owned by different Controllers is rejected before export, while different
-HTTP methods from the same Controller may share a path.
+path assigned to different owners, whether Controllers or folder fallbacks, is
+rejected before export, while different HTTP methods from the same owner may
+share a path.
 
-The first phase does not support package, tag, or schema grouping, a schema
-source index, or `x-java-type`.
+Current limitations:
+
+- Paths cannot be regrouped by package or tag.
+- Schemas are not split into multiple grouped files.
+- No schema source index or `x-java-type` is emitted.
 
 ### Call an API
 
