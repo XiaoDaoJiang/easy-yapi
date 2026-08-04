@@ -1,5 +1,6 @@
 package com.itangcent.easyapi.channel.openapi
 
+import com.itangcent.easyapi.channel.openapi.multidocument.OpenApiMultiDocumentChannel
 import com.itangcent.easyapi.channel.spi.Channel
 import com.itangcent.easyapi.channel.spi.ChannelRegistry
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
@@ -22,6 +23,20 @@ import org.junit.Assert.assertTrue
  * EPs are registered by the IntelliJ test framework's bootstrap.
  */
 class OpenApiChannelRegistrationTest : EasyApiLightCodeInsightFixtureTestCase() {
+
+    fun testOpenApiMultiDocumentChannelIsRegisteredViaPluginXml() {
+        val channel = ChannelRegistry.getInstance(project).getChannel("openapi-multi")
+        assertNotNull(
+            "OpenApiMultiDocumentChannel should be registered via plugin.xml and discoverable via ChannelRegistry",
+            channel
+        )
+        assertTrue(
+            "openapi-multi should resolve to OpenApiMultiDocumentChannel",
+            channel is OpenApiMultiDocumentChannel
+        )
+        assertFalse("OpenApiMultiDocumentChannel should be disabled by default", channel!!.enabledByDefault)
+        assertTrue("OpenApiMultiDocumentChannel should be exposed as an action", channel.exposeAsAction)
+    }
 
     fun testOpenApiChannelIsRegisteredViaPluginXml() {
         val channel = ChannelRegistry.getInstance(project).getChannel("openapi")

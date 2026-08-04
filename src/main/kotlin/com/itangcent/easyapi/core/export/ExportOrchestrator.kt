@@ -14,6 +14,7 @@ import com.itangcent.easyapi.core.export.ExportResult
 import com.itangcent.easyapi.core.ide.support.NotificationUtils
 import com.itangcent.easyapi.core.ide.support.SelectionScope
 import com.itangcent.easyapi.core.logging.IdeaLog
+import kotlinx.coroutines.CancellationException
 
 @Service(Service.Level.PROJECT)
 class ExportOrchestrator(private val project: Project) : IdeaLog {
@@ -66,7 +67,15 @@ class ExportOrchestrator(private val project: Project) : IdeaLog {
 
         val result = channel.export(context)
         if (result is ExportResult.Success) {
-            val handled = channel.handleResult(project, result, channelConfig)
+            val handled = try {
+                channel.handleResult(project, result, channelConfig)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val message = "Failed to handle export result for ${channel.displayName}: ${e.message ?: e.javaClass.simpleName}"
+                NotificationUtils.notifyError(project, "Export", message)
+                return ExportResult.Error(message)
+            }
             if (!handled) {
                 swing {
                     Messages.showInfoMessage(
@@ -111,7 +120,15 @@ class ExportOrchestrator(private val project: Project) : IdeaLog {
 
         val result = channel.export(context)
         if (result is ExportResult.Success) {
-            val handled = channel.handleResult(project, result, channelConfig)
+            val handled = try {
+                channel.handleResult(project, result, channelConfig)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val message = "Failed to handle export result for ${channel.displayName}: ${e.message ?: e.javaClass.simpleName}"
+                LOG.warn(message, e)
+                return ExportResult.Error(message)
+            }
             if (!handled) {
                 swing {
                     Messages.showInfoMessage(

@@ -1,23 +1,31 @@
 package com.itangcent.easyapi.core.export
 
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.TestDialog
 import com.intellij.openapi.ui.TestDialogManager
 import com.intellij.psi.PsiMethod
-import com.intellij.testFramework.registerServiceInstance
+import com.intellij.testFramework.registerOrReplaceServiceInstance
+import com.itangcent.easyapi.channel.spi.Channel
 import com.itangcent.easyapi.channel.spi.ChannelConfig
+import com.itangcent.easyapi.core.cache.api.ApiIndex
 import com.itangcent.easyapi.core.export.ApiEndpoint
 import com.itangcent.easyapi.core.export.ExportResult
 import com.itangcent.easyapi.core.export.HttpMethod
 import com.itangcent.easyapi.core.export.httpMetadata
 import com.itangcent.easyapi.core.ide.support.SelectionScope
+import com.itangcent.easyapi.core.internal.PluginInfo.PLUGIN_ID
 import com.itangcent.easyapi.core.settings.SettingBinder
 import com.itangcent.easyapi.core.settings.module.GeneralSettings
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
 import com.itangcent.easyapi.testFramework.TestConfigReader
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 
 class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
 
     private lateinit var orchestrator: ExportOrchestrator
+    private lateinit var apiIndex: ApiIndex
+    private lateinit var resultHandlingChannel: ResultHandlingChannel
     private var previousDialog: TestDialog? = null
     // Use ChannelConfig.FileConfig (SPI base) instead of MarkdownConfig so this
     // test file does not import channel.<id>.* — MarkdownChannel will fall back
@@ -27,6 +35,13 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
     override fun setUp() {
         super.setUp()
         loadTestFiles()
+        apiIndex = ApiIndex()
+        project.registerOrReplaceServiceInstance(ApiIndex::class.java, apiIndex, testRootDisposable)
+        runBlocking { apiIndex.updateEndpoints(emptyList()) }
+        resultHandlingChannel = ResultHandlingChannel()
+        project.extensionArea
+            .getExtensionPoint<Channel>("$PLUGIN_ID.channel")
+            .registerExtension(resultHandlingChannel, testRootDisposable)
         orchestrator = ExportOrchestrator.getInstance(project)
         previousDialog = try {
             TestDialogManager.setTestDialog(TestDialog { 0 })
@@ -65,6 +80,10 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
         val instance2 = ExportOrchestrator.getInstance(project)
 
         assertSame("Should return same instance for same project", instance1, instance2)
+    }
+
+    fun testApiIndexFixtureIsRegistered() {
+        assertSame("Project should use the isolated API index fixture", apiIndex, ApiIndex.getInstance(project))
     }
 
     fun testOrchestratorHasCorrectProjectReference() {
@@ -121,20 +140,55 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
         assertNotNull("Result should not be null", result)
     }
 
+    fun testExportViaChannelReturnsErrorWhenHandleResultFails() = runTest {
+        val result = orchestrator.exportViaChannel(
+            resultHandlingChannel.id,
+            listOf(createTestEndpoint())
+        )
+
+        assertTrue("Result handling failure should return Error", result is ExportResult.Error)
+        val message = (result as ExportResult.Error).message
+        assertTrue("Error should name the channel. Got: $message", message.contains(resultHandlingChannel.displayName))
+        assertTrue("Error should include the cause. Got: $message", message.contains("disk failed"))
+        assertEquals("handleResult should be called exactly once", 1, resultHandlingChannel.handleCalls)
+    }
+
+    fun testOrchestrateExportReturnsErrorWhenHandleResultFails() = runTest {
+        apiIndex.updateEndpoints(listOf(createTestEndpoint()))
+
+        val result = orchestrator.orchestrateExport(null, resultHandlingChannel.id)
+
+        assertTrue("Result handling failure should return Error", result is ExportResult.Error)
+        val message = (result as ExportResult.Error).message
+        assertTrue("Error should name the channel. Got: $message", message.contains(resultHandlingChannel.displayName))
+        assertTrue("Error should include the cause. Got: $message", message.contains("disk failed"))
+        assertEquals("handleResult should be called exactly once", 1, resultHandlingChannel.handleCalls)
+    }
+
+    fun testExportViaChannelRethrowsHandleResultCancellation() = runTest {
+        resultHandlingChannel.failure = CancellationException("cancelled")
+
+        try {
+            orchestrator.exportViaChannel(resultHandlingChannel.id, listOf(createTestEndpoint()))
+            fail("CancellationException should be rethrown")
+        } catch (e: CancellationException) {
+            assertEquals("Cancellation cause should be preserved", "cancelled", e.message)
+        }
+        assertEquals("handleResult should be called exactly once", 1, resultHandlingChannel.handleCalls)
+    }
+
     fun testOrchestratorHandlesMarkdownChannel() = runTest {
         val result = orchestrator.orchestrateExport(null, "markdown", testFileConfig)
         assertNotNull("Should handle markdown channel", result)
     }
 
     fun testOrchestrateExportWithEmptyCacheReturnsError() = runTest {
-        // When no endpoints are cached and no selection is provided,
-        // orchestrateExport should return an Error result.
-        // Note: If a background scan has populated the cache, this may return Success instead.
         val result = orchestrator.orchestrateExport(null, "markdown", testFileConfig)
-        assertNotNull(result)
-        assertTrue(
-            "Should be Error (no endpoints) or Success (background scan populated cache)",
-            result is ExportResult.Error || result is ExportResult.Success
+
+        assertEquals(
+            "Empty cache should return a no-endpoints error",
+            ExportResult.Error("No API endpoints found"),
+            result
         )
     }
 
@@ -292,5 +346,24 @@ class ExportOrchestratorTest : EasyApiLightCodeInsightFixtureTestCase() {
                 method = method
             )
         )
+    }
+
+    private class ResultHandlingChannel : Channel {
+        override val id: String = "result-handling-test"
+        override val displayName: String = "Result handling test"
+        var failure: Throwable = IllegalStateException("disk failed")
+        var handleCalls: Int = 0
+
+        override suspend fun export(context: ExportContext): ExportResult =
+            ExportResult.Success(context.endpoints.size, "test")
+
+        override suspend fun handleResult(
+            project: Project,
+            result: ExportResult.Success,
+            config: ChannelConfig
+        ): Boolean {
+            handleCalls++
+            throw failure
+        }
     }
 }
