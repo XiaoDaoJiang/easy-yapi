@@ -185,7 +185,7 @@ internal data class BuiltInExtensionProbeRecord(
 
 internal object BuiltInExtensionScenarioLedger {
 
-    const val controlledExtensionCount = 26
+    const val controlledExtensionCount = 30
 
     val scenarios: List<BuiltInExtensionScenario> = listOf(
         BuiltInExtensionScenario("converts", observableTerminalState = "converted model scalar type"),
@@ -225,7 +225,12 @@ internal object BuiltInExtensionScenarioLedger {
         BuiltInExtensionScenario("swagger-openapi", observableTerminalState = "OpenAPI document metadata"),
         BuiltInExtensionScenario("swagger", observableTerminalState = "Swagger endpoint or model metadata"),
         BuiltInExtensionScenario("swagger3-openapi", observableTerminalState = "OpenAPI document metadata"),
-        BuiltInExtensionScenario("swagger3", observableTerminalState = "OpenAPI endpoint or model metadata")
+        BuiltInExtensionScenario("swagger3", observableTerminalState = "OpenAPI endpoint or model metadata"),
+        // YApi-specific extensions (easy-yapi only; easy-api has 26 shared extensions)
+        BuiltInExtensionScenario("yapi", observableTerminalState = "YAPI export tags, status, and mock rules"),
+        BuiltInExtensionScenario("yapi-mock", observableTerminalState = "mock data generation rules for parameters"),
+        BuiltInExtensionScenario("yapi-swagger", observableTerminalState = "YAPI tags derived from Swagger annotations"),
+        BuiltInExtensionScenario("yapi.project", observableTerminalState = "YAPI project grouping from comments")
     )
 
     fun resolvedScenarios(): List<ResolvedBuiltInExtensionScenario> {
