@@ -268,7 +268,7 @@ class OpenApiMultiDocumentChannel internal constructor(
             }
             targetIdentities.add(targetIdentity)
             parentIdentityTokens.add(readFileIdentityToken(canonicalParent))
-            val existingTargetIdentity = readFileIdentityToken(target)
+            val existingTargetIdentity = readFileIdentityToken(target, includeFileState = true)
             if (existingTargetIdentity != null) {
                 existingTargets.add(target)
                 existingTargetIdentityTokens[target] = existingTargetIdentity
@@ -284,7 +284,10 @@ class OpenApiMultiDocumentChannel internal constructor(
         )
     }
 
-    private fun readFileIdentityToken(path: Path): FileIdentityToken? {
+    private fun readFileIdentityToken(
+        path: Path,
+        includeFileState: Boolean = false,
+    ): FileIdentityToken? {
         if (!Files.exists(path, NOFOLLOW_LINKS)) return null
         val attributes = try {
             Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
@@ -292,21 +295,20 @@ class OpenApiMultiDocumentChannel internal constructor(
             return null
         }
         val fileKey = attributes.fileKey()
-        return if (fileKey != null) {
-            FileIdentityToken(fileKey = fileKey.toString())
-        } else {
-            FileIdentityToken(
-                fallback = listOf(
-                    attributes.isRegularFile,
-                    attributes.isDirectory,
-                    attributes.isSymbolicLink,
-                    attributes.isOther,
-                    attributes.size(),
-                    attributes.lastModifiedTime().toMillis(),
-                    attributes.creationTime().toMillis(),
-                ).joinToString(separator = ":"),
-            )
-        }
+        val fileState = listOf(
+            attributes.isRegularFile,
+            attributes.isDirectory,
+            attributes.isSymbolicLink,
+            attributes.isOther,
+            attributes.size(),
+            attributes.lastModifiedTime().toMillis(),
+            attributes.creationTime().toMillis(),
+        ).joinToString(separator = ":")
+        return FileIdentityToken(
+            fileKey = fileKey?.toString(),
+            fallback = fileState.takeIf { fileKey == null },
+            fileState = fileState.takeIf { includeFileState },
+        )
     }
 
     private fun resolveFutureRealPath(path: Path): Path {
@@ -384,6 +386,7 @@ class OpenApiMultiDocumentChannel internal constructor(
     private data class FileIdentityToken(
         val fileKey: String? = null,
         val fallback: String? = null,
+        val fileState: String? = null,
     )
 
     private companion object {
