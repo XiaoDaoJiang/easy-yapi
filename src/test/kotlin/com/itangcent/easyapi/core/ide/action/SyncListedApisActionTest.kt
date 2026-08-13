@@ -5,6 +5,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.Presentation
 import com.itangcent.easyapi.testFramework.EasyApiLightCodeInsightFixtureTestCase
+import java.nio.file.Path
 
 class SyncListedApisActionTest : EasyApiLightCodeInsightFixtureTestCase() {
 
@@ -41,6 +42,14 @@ class SyncListedApisActionTest : EasyApiLightCodeInsightFixtureTestCase() {
 
     fun testActionPerformedReturnsWithoutProject() {
         action.actionPerformed(eventWithProject(null))
+    }
+
+    fun testManifestUsesDedicatedSyncDirectory() {
+        assertEquals(
+            "Manifest should not be loaded as a top-level EasyApi rule file",
+            Path.of("project", ".easyapi", "sync", "sync-apis.txt"),
+            action.manifestPath("project")
+        )
     }
 
     private fun eventWithProject(eventProject: com.intellij.openapi.project.Project?): AnActionEvent =
