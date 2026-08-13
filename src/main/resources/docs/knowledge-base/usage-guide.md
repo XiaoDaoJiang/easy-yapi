@@ -70,7 +70,8 @@ EasyYapi can export API endpoints to YApi, Postman, Markdown, cURL, or IntelliJ 
 
 ## Sync Listed APIs
 
-Create the UTF-8 file `<project>/.easyapi/sync-apis.txt` and list one Controller API method per line:
+Create the UTF-8 file `<project>/.easyapi/sync/sync-apis.txt` and list one Controller API method per line:
+The dedicated `sync` subdirectory keeps the manifest outside the non-recursive `.easyapi` rule-file scan.
 
 ```text
 # Equivalent simple forms when the method is not overloaded

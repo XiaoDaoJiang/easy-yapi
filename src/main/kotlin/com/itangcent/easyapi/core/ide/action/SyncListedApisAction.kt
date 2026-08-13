@@ -35,7 +35,7 @@ class SyncListedApisAction : AnAction(), IdeaLog {
             NotificationUtils.notifyWarning(project, TITLE, "Project base path is unavailable")
             return
         }
-        val manifestPath = Path.of(basePath, MANIFEST_DIRECTORY, MANIFEST_FILE)
+        val manifestPath = manifestPath(basePath)
         val console = project.console
         console.info("SyncListedApisAction.actionPerformed: manifest=$manifestPath")
 
@@ -124,9 +124,13 @@ class SyncListedApisAction : AnAction(), IdeaLog {
         return Files.readString(path, StandardCharsets.UTF_8)
     }
 
+    internal fun manifestPath(basePath: String): Path =
+        Path.of(basePath, MANIFEST_DIRECTORY, MANIFEST_SUBDIRECTORY, MANIFEST_FILE)
+
     private companion object {
         const val TITLE = "Sync Listed APIs"
         const val MANIFEST_DIRECTORY = ".easyapi"
+        const val MANIFEST_SUBDIRECTORY = "sync"
         const val MANIFEST_FILE = "sync-apis.txt"
     }
 }
