@@ -59,6 +59,15 @@ jobs:
       - name: Test and build plugin
         run: ./gradlew test buildPlugin --stacktrace
 
+      - name: Upload test failure report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report-${{ github.run_attempt }}
+          path: build/reports/tests/test/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Verify release archive
         shell: bash
         run: |
