@@ -8,7 +8,7 @@ EasyYapi is an IntelliJ IDEA plugin (v3.0 rewrite) for API development — expor
 
 - **Language:** Kotlin (2.1.0+)
 - **JDK:** 17+
-- **IntelliJ Platform:** 2023.1+
+- **IntelliJ Platform:** 2025.2+ (since-build `252`; default set in `gradle.properties` `pluginSinceBuild`, overridable via `script/package.sh <since>-<until>` for best-effort legacy builds)
 - **Build:** Gradle (`./gradlew build`)
 - **Tests:** `./gradlew test`
 - **Run Plugin:** `./gradlew runIde`
@@ -36,7 +36,7 @@ class MyProjectService(private val project: Project) {
 }
 ```
 
-**Examples:** [ApiScanner](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/dashboard/ApiScanner.kt), [ApiDashboardService](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/dashboard/ApiDashboardService.kt), [IdeaConsoleProvider](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/logging/IdeaConsoleProvider.kt), [PostmanCollectionHelper](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/channel/postman/PostmanCollectionHelper.kt), [HttpClientProvider](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/http/HttpClientProvider.kt)
+**Examples:** [ApiScanner](src/main/kotlin/com/itangcent/easyapi/core/dashboard/ApiScanner.kt), [ApiDashboardService](src/main/kotlin/com/itangcent/easyapi/core/dashboard/ApiDashboardService.kt), [IdeaConsoleProvider](src/main/kotlin/com/itangcent/easyapi/core/logging/IdeaConsoleProvider.kt), [PostmanCollectionHelper](src/main/kotlin/com/itangcent/easyapi/channel/postman/PostmanCollectionHelper.kt), [HttpClientProvider](src/main/kotlin/com/itangcent/easyapi/core/http/HttpClientProvider.kt)
 
 ### Object Helper/Utils
 
@@ -48,7 +48,7 @@ object MyHelperUtils {
 }
 ```
 
-**Examples:** [SpringMvcConstants](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/framework/springmvc/SpringMvcConstants.kt), [MavenHelper](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/util/ide/MavenHelper.kt), [ObjectModelUtils](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/psi/model/ObjectModelUtils.kt)
+**Examples:** [SpringMvcConstants](src/main/kotlin/com/itangcent/easyapi/framework/springmvc/SpringMvcConstants.kt), [MavenHelper](src/main/kotlin/com/itangcent/easyapi/core/util/ide/MavenHelper.kt), [ObjectModelUtils](src/main/kotlin/com/itangcent/easyapi/core/psi/model/ObjectModelUtils.kt)
 
 ## Code Style
 
@@ -60,7 +60,7 @@ object MyHelperUtils {
 
 ## Threading Model
 
-All PSI/VFS operations must follow IntelliJ's threading rules. Use [IdeDispatchers](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/internal/threading/IdeDispatchers.kt).
+All PSI/VFS operations must follow IntelliJ's threading rules. Use [IdeDispatchers](src/main/kotlin/com/itangcent/easyapi/core/internal/threading/IdeDispatchers.kt).
 
 ### Dispatchers
 
@@ -96,6 +96,31 @@ IdeDispatchers.isReadAccessAllowed   // on read thread
 IdeDispatchers.isWriteAccessAllowed  // on write thread
 IdeDispatchers.isDispatchThread      // on EDT
 ```
+
+### Thread-contract tiers (golden rules)
+
+Before writing code that touches PSI/VFS/UI, classify it by **who controls the caller** — the distinguishing question is whether the set of callers is closed (ours) or open (anyone's).
+
+| Tier | Examples | Contract |
+|------|----------|----------|
+| **Pure** | DTOs, `ObjectModelUtils`, string helpers | Callable on any thread; no threading rules |
+| **Internal pipeline** | `core/export/`, `core/psi/` helpers | `@requires ReadAction` (or WriteAction) in KDoc; the entry point acquires the action once, callees run unwrapped |
+| **Boundary (open callers)** | `ScriptXxxContext` objects handed to Groovy, EP implementations invoked by the platform | **Every public member must self-protect** — no `@requires` escape hatch |
+
+Known thread entry points:
+
+- **EDT** — `core/ide/action/` AnActions, dialogs, linemarkers, settings UI, dashboard panel
+- **`EasyAPI-background` pool** — startup activities (`ApiIndexStartupActivity`, `SettingsMigrationActivity`, …), `backgroundAsync` call sites, export orchestration
+- **Rule engine (uncontrolled)** — `Jsr223ScriptParser` evaluates Groovy rules inside `withContext(IdeDispatchers.Background)` with **no read action**. Scripts can invoke ANY public member of the bound context objects — including implicit `toString()` via string interpolation, `hashCode`, `equals`, and property access. This is where issue #1432 crashed.
+
+Golden rules:
+
+1. Pure code is callable anywhere.
+2. Internal pipeline code performing PSI/VFS reads: `suspend` + `read {}`, or sync + `readSync {}` — *unless* documented with `@requires ReadAction` AND all callers are internal. Never publish a `@requires` member on a boundary class.
+3. PSI writes / UI updates go through `write {}` / `swing {}`; never bypass.
+4. **Boundary classes self-protect unconditionally**: every public member (and implicit hooks `toString`/`hashCode`/`equals`, plus `by lazy` initializers reachable from them) wraps its own PSI access in `readSync`. `readSync` is a no-op inside an existing read action, so nesting costs nothing.
+5. Read-action granularity: fine-grained at the boundary; coarse `read {}` blocks only where the work is fast. Never wrap a whole Groovy script evaluation in one read action (slow scripts + long read action blocks writes and freezes the IDE).
+6. `runBlocking` from a boundary member is acceptable only if every suspend callee performs its own `read {}` internally; it blocks the calling thread but does not itself violate threading.
 
 ### IntelliJ context propagation warning
 
@@ -150,7 +175,7 @@ The plugin has three output channels. **Pick one** by the first-match-wins rule 
 
 ### IdeaLog interface
 
-Implement `IdeaLog` ([core/logging/IdeaLog.kt](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/logging/IdeaLog.kt)) to get a `LOG` property; do **not** call `Logger.getLogger()` directly.
+Implement `IdeaLog` ([core/logging/IdeaLog.kt](src/main/kotlin/com/itangcent/easyapi/core/logging/IdeaLog.kt)) to get a `LOG` property; do **not** call `Logger.getLogger()` directly.
 
 ```kotlin
 class MyService : IdeaLog {
@@ -182,7 +207,7 @@ val selected = Messages.showChooseDialog(
 val choice = Messages.showYesNoCancelDialog("Overwrite?", "Confirm", Messages.getQuestionIcon())
 ```
 
-**Example:** [DefaultHttpContextCacheHelper](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/cache/http/DefaultHttpContextCacheHelper.kt) — host selection dialog.
+**Example:** [DefaultHttpContextCacheHelper](src/main/kotlin/com/itangcent/easyapi/core/cache/http/DefaultHttpContextCacheHelper.kt) — host selection dialog.
 
 ### DialogWrapper — complex multi-field dialogs
 
@@ -210,7 +235,7 @@ class MyConfigDialog(private val project: Project) : DialogWrapper(project) {
 }
 ```
 
-**Examples:** [ExportDialog](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/ide/dialog/ExportDialog.kt), [ScriptExecutorDialog](file:///Users/tangcent/code/github/easy-api/src/main/kotlin/com/itangcent/easyapi/core/ide/script/ScriptExecutorDialog.kt)
+**Examples:** [ExportDialog](src/main/kotlin/com/itangcent/easyapi/core/ide/dialog/ExportDialog.kt), [ScriptExecutorDialog](src/main/kotlin/com/itangcent/easyapi/core/ide/script/ScriptExecutorDialog.kt)
 
 ## Project Structure
 
@@ -310,6 +335,12 @@ Tests use JUnit 4 + Mockito/Mockito-Kotlin + the IntelliJ Platform Test Framewor
 ## Tooling
 
 - **`codegraph` MCP index refresh:** After a refactor that moves/renames files, refresh the index with `codegraph sync` (incremental) or `codegraph index` (full rebuild) from the project root. The `codegraph_explore` MCP tool is read-only and does not refresh the index.
+
+## Issues & PRs
+
+- **Bug reports arrive as structured GitHub Issue Forms** (`.github/ISSUE_TEMPLATE/bug_report.yml`). The form captures the trigger action (export/call/scan/freeze), framework(s), custom-rule setup, minimal repro code, and logs captured with the log level raised to DEBUG/TRACE. When triaging an issue, read these fields first — they identify the entry point and rule context before you open the code. Question and feature requests have their own forms in the same folder.
+- **PRs follow `.github/pull_request_template.md`.** Its Architecture & Threading and Logging checklists mirror the rules in this document. When a checklist item does not apply to a change, state why in the PR description rather than deleting it.
+- **PR titles use the conventional-commit format** — `<type>(<scope>): <subject>`, with the same type list as the [git-commit](.skills/git-commit/SKILL.md) skill. PRs are squash-merged, so the title becomes the merge-commit subject, and `script/release.sh` groups changelog entries by the `feat`/`fix`/`refactor` prefix — an unprefixed title lands verbatim in the generic changelog section instead of its proper group.
 
 ## Skills
 
