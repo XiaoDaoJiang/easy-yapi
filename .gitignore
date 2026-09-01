@@ -21,3 +21,4 @@ __pycache__/
 .easyapi/
 /.codegraph/
 /.worktrees/
+.workbuddy/
