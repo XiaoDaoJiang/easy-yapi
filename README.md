@@ -67,9 +67,9 @@ API methods are marked with a gutter icon in the editor. Click it to open the en
 Convert class fields to various formats:
 
 - **To JSON** — Standard JSON with default values
-- **To JSON5** — JSON5 format with comments support
+- **To JSON5** — JSON5 with comments support
 - **To Properties** — Java `.properties` format
-- **To YAML** — YAML format with Spring Boot `application.yml` semantics (honors `@ConfigurationProperties` prefix)
+- **To YAML** — YAML with Spring Boot `application.yml` semantics (honors `@ConfigurationProperties` prefix)
 
 ### Supported Frameworks
 
@@ -286,9 +286,26 @@ The built-in assistant reads [`docs/knowledge-base/rule-guide.md`](src/main/reso
 
 ### Compatibility
 
-| JDK | IDE | Status |
-|-----|-----|--------|
-| 17 | 2025.2.1 | ✓ |
+Only the default build is published to the JetBrains Marketplace.
+
+| Build | IDE compatibility | Support level |
+|-------|-------------------|---------------|
+| Default (Marketplace) | IntelliJ IDEA 2025.2+ (JDK 17+) | Officially supported |
+| Compatibility build | IntelliJ IDEA 2022.1 – 2025.1 | Best-effort, not verified |
+
+If you are on an older IDEA version:
+
+- **Download the compatibility build** — every [GitHub Release](https://github.com/tangcent/easy-yapi/releases) additionally attaches a best-effort build covering IDEA 2022.1 through 2025.1; the release notes' Downloads table lists the exact IDE range of each zip. It is compiled against the newest platform, so it is not verified on older IDEs — if it fails on your IDE, file an issue or build your own.
+- **Build your own** — `script/package.sh` accepts an IDEA compatibility range as its first argument (quote ranges containing `*` so the shell does not glob-expand them):
+
+```bash
+./script/package.sh              # default: 2025.2+, unbounded (what ships to Marketplace)
+./script/package.sh '221-*'       # 2022.1 and newer, unbounded
+./script/package.sh 221-251      # 2022.1 through 2025.1
+./script/package.sh 233-242       # any range; "*" means unbounded
+```
+
+Compatibility outside the default range is not guaranteed — the plugin may use APIs that do not exist in older IDEs; such issues are outside the project's support scope.
 
 ## Architecture
 
@@ -371,7 +388,7 @@ The plugin is built around three IntelliJ extension points (EPs). Adding support
 
 #### Adding a new channel (output destination)
 
-A channel converts `ApiEndpoint` models into a specific output format and handles file write or remote upload (e.g. a Postman variant, or a new target like Insomnia). Create a `channel/<id>/` package with a `Channel` implementation and register it against the `channel` EP:
+A channel converts `ApiEndpoint` models to a specific output format and handles file write or remote upload (e.g. a Postman variant, or a new target like Insomnia). Create a `channel/<id>/` package with a `Channel` implementation and register it against the `channel` EP:
 
 ```xml
 <channel implementation="com.itangcent.easyapi.channel.<id>.<ChannelClass>" />
