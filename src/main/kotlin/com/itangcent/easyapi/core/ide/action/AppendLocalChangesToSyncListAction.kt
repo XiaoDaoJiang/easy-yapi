@@ -41,6 +41,11 @@ class AppendLocalChangesToSyncListAction : AnAction(), IdeaLog {
                     NotificationUtils.notifyWarning(project, TITLE, message)
                     return@backgroundAsync
                 }
+                result.rejection?.let { message ->
+                    console.error("Append local changes to sync list failed: $message")
+                    NotificationUtils.notifyError(project, TITLE, message)
+                    return@backgroundAsync
+                }
 
                 val added = result.appendedSelectors.size
                 val skipped = candidates.size - added

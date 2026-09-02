@@ -126,6 +126,7 @@ class ControllerApiManifestTest {
         )
 
         assertFalse("Directory targets must not be written", result.written)
+        assertTrue("Directory targets must report a rejected append", result.rejection != null)
         assertTrue("Directory target must remain a directory", Files.isDirectory(directory))
         assertTrue("Directory target must stay empty", Files.list(directory).use { it.noneMatch { true } })
     }

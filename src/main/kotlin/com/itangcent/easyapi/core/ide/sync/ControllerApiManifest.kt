@@ -36,7 +36,8 @@ internal data class ManifestParseResult(
 
 internal data class ManifestAppendResult(
     val appendedSelectors: List<String> = emptyList(),
-    val errors: List<ManifestParseError> = emptyList()
+    val errors: List<ManifestParseError> = emptyList(),
+    val rejection: String? = null
 ) {
     val written: Boolean get() = appendedSelectors.isNotEmpty()
 }
@@ -71,7 +72,7 @@ internal object ControllerApiManifest {
         val existingContent = when {
             missingTarget -> ""
             Files.isRegularFile(path, NOFOLLOW_LINKS) -> Files.readString(path, UTF_8)
-            else -> return ManifestAppendResult()
+            else -> return ManifestAppendResult(rejection = "Manifest target is not a regular file: $path")
         }
         val existing = parse(existingContent)
         if (existing.errors.isNotEmpty()) return ManifestAppendResult(errors = existing.errors)
