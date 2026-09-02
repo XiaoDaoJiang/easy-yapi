@@ -3,16 +3,10 @@ package com.itangcent.easyapi.core.ide.action
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.vcs.changes.ChangeListManager
-import com.intellij.psi.PsiDocumentManager
-import com.itangcent.easyapi.core.ide.DumbModeHelper
 import com.itangcent.easyapi.core.ide.support.NotificationUtils
-import com.itangcent.easyapi.core.ide.support.runWithProgress
-import com.itangcent.easyapi.core.ide.sync.ChangedApiCandidateResolver
-import com.itangcent.easyapi.core.ide.sync.LocalChangesSourceCollector
 import com.itangcent.easyapi.core.ide.sync.resolveAndExportApis
+import com.itangcent.easyapi.core.ide.sync.resolveLocalChangesApiCandidates
 import com.itangcent.easyapi.core.internal.threading.backgroundAsync
-import com.itangcent.easyapi.core.internal.threading.swing
 import com.itangcent.easyapi.core.logging.IdeaLog
 import com.itangcent.easyapi.core.logging.console
 import kotlinx.coroutines.CancellationException
@@ -32,38 +26,11 @@ class SyncChangedApisAction : AnAction(), IdeaLog {
 
         backgroundAsync {
             try {
-                if (!DumbModeHelper.waitForSmartModeOrNotify(project)) return@backgroundAsync
-                swing { PsiDocumentManager.getInstance(project).commitAllDocuments() }
-
-                val changeListManager = ChangeListManager.getInstance(project)
-                val sources = runWithProgress(project, "Reading local changes...") {
-                    LocalChangesSourceCollector(project).collect(
-                        changeListManager.allChanges,
-                        changeListManager.unversionedFilesPaths
-                    )
-                }
-                sources.warnings.forEach(console::warn)
-                if (sources.files.isEmpty()) {
-                    NotificationUtils.notifyWarning(project, TITLE, "No changed Java source files found")
-                    return@backgroundAsync
-                }
-
-                val candidates = runWithProgress(project, "Finding changed APIs...") {
-                    ChangedApiCandidateResolver(project).resolve(sources.files)
-                }
-                candidates.warnings.forEach(console::warn)
-                if (candidates.candidates.isEmpty()) {
-                    NotificationUtils.notifyWarning(project, TITLE, "No changed Controller APIs found")
-                    return@backgroundAsync
-                }
-
-                candidates.candidates.forEach { candidate ->
-                    console.info("Changed API candidate: ${candidate.selector}; ${candidate.reason}")
-                }
+                val candidates = resolveLocalChangesApiCandidates(project, TITLE) ?: return@backgroundAsync
                 resolveAndExportApis(
                     project,
                     TITLE,
-                    candidates.candidates.map { it.selector }
+                    candidates.map { it.selector }
                 )
             } catch (e: CancellationException) {
                 throw e
