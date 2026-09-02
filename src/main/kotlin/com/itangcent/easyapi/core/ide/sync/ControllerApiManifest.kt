@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption.APPEND
+import java.nio.file.StandardOpenOption.CREATE
 
 internal sealed interface ControllerApiSelector {
     val className: String
@@ -79,7 +81,7 @@ internal object ControllerApiManifest {
         val lines = missing.map(::format)
         if (Files.notExists(path)) path.parent?.let(Files::createDirectories)
         val separator = if (existingContent.isEmpty() || existingContent.endsWith('\n')) "" else "\n"
-        Files.writeString(path, existingContent + separator + lines.joinToString("\n", postfix = "\n"), UTF_8)
+        Files.writeString(path, separator + lines.joinToString("\n", postfix = "\n"), UTF_8, CREATE, APPEND)
         return ManifestAppendResult(appendedSelectors = lines)
     }
 
