@@ -3,7 +3,9 @@ package com.itangcent.easyapi.core.ide.sync
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNoException
 import org.junit.Test
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -112,6 +114,45 @@ class ControllerApiManifestTest {
 
         assertFalse("Empty candidate merge must not write", result.written)
         assertEquals("Existing content must remain unchanged", "com.acme.UserController#create()\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `directory target causes zero write`() {
+        val directory = Files.createTempDirectory("controller-api-manifest")
+
+        val result = ControllerApiManifest.append(
+            directory,
+            listOf(methodCandidate("com.acme.UserController", "create"))
+        )
+
+        assertFalse("Directory targets must not be written", result.written)
+        assertTrue("Directory target must remain a directory", Files.isDirectory(directory))
+        assertTrue("Directory target must stay empty", Files.list(directory).use { it.noneMatch { true } })
+    }
+
+    @Test
+    fun `dangling symbolic link causes zero write`() {
+        val directory = Files.createTempDirectory("controller-api-manifest")
+        val target = directory.resolve("target.txt")
+        val manifest = directory.resolve("sync-apis.txt")
+        try {
+            Files.createSymbolicLink(manifest, target)
+        } catch (e: UnsupportedOperationException) {
+            assumeNoException("Symbolic links are unsupported", e)
+        } catch (e: SecurityException) {
+            assumeNoException("Symbolic link creation is denied", e)
+        } catch (e: IOException) {
+            assumeNoException("Symbolic link creation is unavailable", e)
+        }
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create"))
+        )
+
+        assertFalse("Symbolic link targets must not be written", result.written)
+        assertTrue("The symbolic link must remain", Files.isSymbolicLink(manifest))
+        assertFalse("The dangling link target must stay missing", Files.exists(target))
     }
 
     @Test

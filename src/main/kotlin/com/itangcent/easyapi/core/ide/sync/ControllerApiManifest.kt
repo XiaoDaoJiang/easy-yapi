@@ -67,8 +67,9 @@ internal object ControllerApiManifest {
     fun append(path: Path, candidates: Collection<ChangedApiCandidate>): ManifestAppendResult {
         if (candidates.isEmpty()) return ManifestAppendResult()
 
+        val missingTarget = !Files.exists(path, NOFOLLOW_LINKS)
         val existingContent = when {
-            Files.notExists(path) -> ""
+            missingTarget -> ""
             Files.isRegularFile(path, NOFOLLOW_LINKS) -> Files.readString(path, UTF_8)
             else -> return ManifestAppendResult()
         }
@@ -79,7 +80,7 @@ internal object ControllerApiManifest {
         if (missing.isEmpty()) return ManifestAppendResult()
 
         val lines = missing.map(::format)
-        if (Files.notExists(path)) path.parent?.let(Files::createDirectories)
+        if (missingTarget) path.parent?.let(Files::createDirectories)
         val separator = if (existingContent.isEmpty() || existingContent.endsWith('\n')) "" else "\n"
         Files.writeString(path, separator + lines.joinToString("\n", postfix = "\n"), UTF_8, CREATE, APPEND)
         return ManifestAppendResult(appendedSelectors = lines)
