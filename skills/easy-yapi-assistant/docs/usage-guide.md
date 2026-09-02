@@ -10,12 +10,13 @@ This guide walks through the most common EasyYapi workflows — installation, fi
 
 1. [Install](#install)
 2. [First Export](#first-export)
-3. [Sync Listed APIs](#sync-listed-apis)
-4. [API Dashboard](#api-dashboard)
-5. [Search](#search)
-6. [Field Conversion](#field-conversion)
-7. [Pre/Post Scripts](#prepost-scripts)
-8. [AI-assisted Rule Creation](#ai-assisted-rule-creation)
+3. [Sync Changed APIs](#sync-changed-apis)
+4. [Sync Listed APIs](#sync-listed-apis)
+5. [API Dashboard](#api-dashboard)
+6. [Search](#search)
+7. [Field Conversion](#field-conversion)
+8. [Pre/Post Scripts](#prepost-scripts)
+9. [AI-assisted Rule Creation](#ai-assisted-rule-creation)
 
 ---
 
@@ -65,6 +66,14 @@ EasyYapi can export API endpoints to YApi, Postman, Markdown, cURL, or IntelliJ 
 
 1. Right-click an endpoint method and select **EasyYapi → Export to cURL**.
 2. The cURL command is copied to the clipboard (or saved to a file).
+
+---
+
+## Sync Changed APIs
+
+Invoke **EasyYapi → Sync Changed APIs...** to inspect Java files in IDEA Local Changes, including unversioned files. EasyYapi selects the changed method when a method body, signature, annotation, or JavaDoc changes; a class-level declaration, annotation, or JavaDoc change selects the whole Controller; a new Controller also selects the whole class. The normal export dialog opens with the generated endpoints so you can review them and choose any enabled channel.
+
+The initial implementation intentionally ignores non-Controller files, imports, fields, initializer blocks, inner classes, whitespace-only edits, and deleted source files. A deleted line inside a surviving method is accepted only when the previous method maps exactly to the current fully qualified class, method name, and parameter types. Unresolved changes are reported instead of guessed.
 
 ---
 

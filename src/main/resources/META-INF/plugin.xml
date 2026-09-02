@@ -216,6 +216,15 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
 
+        <action id="com.itangcent.idea.easy_api.actions.SyncChangedApisAction"
+                class="com.itangcent.easyapi.core.ide.action.SyncChangedApisAction"
+                text="Sync Changed APIs..."
+                description="Export Controller APIs changed in IDEA Local Changes">
+            <add-to-group group-id="EasyApiGenerateMenu" anchor="last"/>
+            <add-to-group group-id="EasyApiEditorLangPopupMenu" anchor="last"/>
+            <add-to-group group-id="EasyApiProjectViewPopupMenu" anchor="last"/>
+        </action>
+
         <action id="com.itangcent.idea.easy_api.actions.SyncListedApisAction"
                 class="com.itangcent.easyapi.core.ide.action.SyncListedApisAction"
                 text="Sync Listed APIs..."
