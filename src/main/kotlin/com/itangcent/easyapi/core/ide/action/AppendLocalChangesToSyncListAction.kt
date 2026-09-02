@@ -53,7 +53,7 @@ class AppendLocalChangesToSyncListAction : AnAction(), IdeaLog {
                     LocalFileSystem.getInstance().refreshAndFindFileByIoFile(manifestPath.toFile())
                 }
                 console.info("Sync manifest updated: added=$added, skipped=$skipped")
-                NotificationUtils.notifyInfo(project, TITLE, "Added $added API selector(s); skipped $skipped already listed selector(s)")
+                NotificationUtils.notifyInfo(project, TITLE, "Added $added API selector(s); skipped $skipped covered candidate(s)")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -46,7 +46,10 @@ internal object ControllerApiManifest {
 
     private val identifier = Regex("[A-Za-z_$][\\w$]*")
     private val qualifiedName = Regex("[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*")
-    private val parameterType = Regex("[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*(?:\\[\\])*(?:\\.\\.\\.)?")
+    private val parameterType = Regex(
+        "[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*" +
+            "(?:<[\\w$?.,<>\\[\\] ]+>)?(?:\\[\\])*(?:\\.\\.\\.)?"
+    )
 
     fun parse(content: String): ManifestParseResult {
         val selectors = mutableListOf<ControllerApiSelector>()
@@ -115,7 +118,7 @@ internal object ControllerApiManifest {
         this !is ControllerMethodSelector -> false
         candidate !is ControllerMethodSelector -> false
         else -> methodName == candidate.methodName &&
-            (parameterTypeNames == null || parameterTypeNames == candidate.parameterTypeNames)
+            parameterTypeNames == candidate.parameterTypeNames
     }
 
     private fun parseLine(line: String, lineNumber: Int): Result<ControllerApiSelector> = runCatching {
@@ -152,13 +155,37 @@ internal object ControllerApiManifest {
         val parameters = if (rawParameters.isBlank()) {
             emptyList()
         } else {
-            rawParameters.split(',').map { it.trim() }.also { types ->
+            splitParameterTypes(rawParameters).also { types ->
                 require(types.none { it.isEmpty() }) { "Parameter type must not be empty" }
                 require(types.all(parameterType::matches)) { "Invalid parameter type list: '$rawParameters'" }
             }
         }
 
         ControllerMethodSelector(className, methodName, parameters, lineNumber)
+    }
+
+    private fun splitParameterTypes(rawParameters: String): List<String> {
+        val parameters = mutableListOf<String>()
+        var genericDepth = 0
+        var parameterStart = 0
+
+        rawParameters.forEachIndexed { index, char ->
+            when (char) {
+                '<' -> genericDepth++
+                '>' -> {
+                    require(genericDepth > 0) { "Invalid parameter type list: '$rawParameters'" }
+                    genericDepth--
+                }
+
+                ',' -> if (genericDepth == 0) {
+                    parameters += rawParameters.substring(parameterStart, index).trim()
+                    parameterStart = index + 1
+                }
+            }
+        }
+        require(genericDepth == 0) { "Invalid parameter type list: '$rawParameters'" }
+        parameters += rawParameters.substring(parameterStart).trim()
+        return parameters
     }
 
     private const val FORMAT_ERROR =

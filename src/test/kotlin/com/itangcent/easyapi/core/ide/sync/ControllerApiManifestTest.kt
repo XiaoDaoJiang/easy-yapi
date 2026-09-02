@@ -29,6 +29,43 @@ class ControllerApiManifestTest {
     }
 
     @Test
+    fun `round trips appended generic parameter types`() {
+        val manifest = temporaryManifest()
+        val selector = ControllerMethodSelector(
+            "com.acme.UserController",
+            "create",
+            listOf(
+                "java.util.Map<java.lang.String,java.util.List<com.acme.Foo>>",
+                "java.lang.String"
+            ),
+            1
+        )
+
+        ControllerApiManifest.append(manifest, listOf(ChangedApiCandidate(selector, "test")))
+        val parsed = ControllerApiManifest.parse(Files.readString(manifest))
+
+        assertTrue("Appended canonical generic types should parse", parsed.errors.isEmpty())
+        assertEquals("Parsed selector should preserve canonical generic types", listOf(selector), parsed.selectors)
+    }
+
+    @Test
+    fun `no signature selector does not cover incoming signature`() {
+        val manifest = temporaryManifest("com.acme.UserController#create\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create", "java.lang.String"))
+        )
+
+        assertTrue("Signature-qualified candidate should be appended", result.written)
+        assertEquals(
+            "Simple and signature-qualified selectors should both remain",
+            "com.acme.UserController#create\ncom.acme.UserController#create(java.lang.String)\n",
+            Files.readString(manifest)
+        )
+    }
+
+    @Test
     fun `preserves prior content and appends only missing candidates`() {
         val manifest = temporaryManifest("# keep this comment\n\ncom.acme.UserController#get()\n")
 
