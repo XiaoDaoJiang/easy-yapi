@@ -1,5 +1,10 @@
 package com.itangcent.easyapi.core.ide.sync
 
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
+
 internal sealed interface ControllerApiSelector {
     val className: String
     val lineNumber: Int
@@ -27,6 +32,13 @@ internal data class ManifestParseResult(
     val errors: List<ManifestParseError>
 )
 
+internal data class ManifestAppendResult(
+    val appendedSelectors: List<String> = emptyList(),
+    val errors: List<ManifestParseError> = emptyList()
+) {
+    val written: Boolean get() = appendedSelectors.isNotEmpty()
+}
+
 internal object ControllerApiManifest {
 
     private val identifier = Regex("[A-Za-z_$][\\w$]*")
@@ -48,6 +60,58 @@ internal object ControllerApiManifest {
         }
 
         return ManifestParseResult(selectors, errors)
+    }
+
+    fun append(path: Path, candidates: Collection<ChangedApiCandidate>): ManifestAppendResult {
+        if (candidates.isEmpty()) return ManifestAppendResult()
+
+        val existingContent = when {
+            Files.notExists(path) -> ""
+            Files.isRegularFile(path, NOFOLLOW_LINKS) -> Files.readString(path, UTF_8)
+            else -> return ManifestAppendResult()
+        }
+        val existing = parse(existingContent)
+        if (existing.errors.isNotEmpty()) return ManifestAppendResult(errors = existing.errors)
+
+        val missing = mergeCandidates(existing.selectors, candidates.map { it.selector })
+        if (missing.isEmpty()) return ManifestAppendResult()
+
+        val lines = missing.map(::format)
+        if (Files.notExists(path)) path.parent?.let(Files::createDirectories)
+        val separator = if (existingContent.isEmpty() || existingContent.endsWith('\n')) "" else "\n"
+        Files.writeString(path, existingContent + separator + lines.joinToString("\n", postfix = "\n"), UTF_8)
+        return ManifestAppendResult(appendedSelectors = lines)
+    }
+
+    private fun mergeCandidates(
+        existing: List<ControllerApiSelector>,
+        candidates: List<ControllerApiSelector>
+    ): List<ControllerApiSelector> {
+        val incoming = candidates.groupBy { it.className }.flatMap { (_, selectors) ->
+            selectors.filterIsInstance<ControllerSelector>().firstOrNull()?.let(::listOf)
+                ?: selectors.distinctBy(::selectorKey)
+        }
+        return incoming.filterNot { candidate -> existing.any { it.covers(candidate) } }
+    }
+
+    private fun format(selector: ControllerApiSelector): String = when (selector) {
+        is ControllerSelector -> "${selector.className}#*"
+        is ControllerMethodSelector -> "${selector.className}#${selector.methodName}" +
+            "(${selector.parameterTypeNames.orEmpty().joinToString(",")})"
+    }
+
+    private fun selectorKey(selector: ControllerApiSelector): Any = when (selector) {
+        is ControllerSelector -> selector.className
+        is ControllerMethodSelector -> listOf(selector.className, selector.methodName, selector.parameterTypeNames)
+    }
+
+    private fun ControllerApiSelector.covers(candidate: ControllerApiSelector): Boolean = when {
+        className != candidate.className -> false
+        this is ControllerSelector -> true
+        this !is ControllerMethodSelector -> false
+        candidate !is ControllerMethodSelector -> false
+        else -> methodName == candidate.methodName &&
+            (parameterTypeNames == null || parameterTypeNames == candidate.parameterTypeNames)
     }
 
     private fun parseLine(line: String, lineNumber: Int): Result<ControllerApiSelector> = runCatching {
