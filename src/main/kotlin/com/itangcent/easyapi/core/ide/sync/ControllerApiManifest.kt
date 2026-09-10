@@ -1,5 +1,12 @@
 package com.itangcent.easyapi.core.ide.sync
 
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption.APPEND
+import java.nio.file.StandardOpenOption.CREATE
+
 internal sealed interface ControllerApiSelector {
     val className: String
     val lineNumber: Int
@@ -27,11 +34,22 @@ internal data class ManifestParseResult(
     val errors: List<ManifestParseError>
 )
 
+internal data class ManifestAppendResult(
+    val appendedSelectors: List<String> = emptyList(),
+    val errors: List<ManifestParseError> = emptyList(),
+    val rejection: String? = null
+) {
+    val written: Boolean get() = appendedSelectors.isNotEmpty()
+}
+
 internal object ControllerApiManifest {
 
     private val identifier = Regex("[A-Za-z_$][\\w$]*")
     private val qualifiedName = Regex("[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*")
-    private val parameterType = Regex("[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*(?:\\[\\])*(?:\\.\\.\\.)?")
+    private val parameterType = Regex(
+        "[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*" +
+            "(?:<[\\w$?.,<>\\[\\] ]+>)?(?:\\[\\])*(?:\\.\\.\\.)?"
+    )
 
     fun parse(content: String): ManifestParseResult {
         val selectors = mutableListOf<ControllerApiSelector>()
@@ -48,6 +66,59 @@ internal object ControllerApiManifest {
         }
 
         return ManifestParseResult(selectors, errors)
+    }
+
+    fun append(path: Path, candidates: Collection<ChangedApiCandidate>): ManifestAppendResult {
+        if (candidates.isEmpty()) return ManifestAppendResult()
+
+        val missingTarget = !Files.exists(path, NOFOLLOW_LINKS)
+        val existingContent = when {
+            missingTarget -> ""
+            Files.isRegularFile(path, NOFOLLOW_LINKS) -> Files.readString(path, UTF_8)
+            else -> return ManifestAppendResult(rejection = "Manifest target is not a regular file: $path")
+        }
+        val existing = parse(existingContent)
+        if (existing.errors.isNotEmpty()) return ManifestAppendResult(errors = existing.errors)
+
+        val missing = mergeCandidates(existing.selectors, candidates.map { it.selector })
+        if (missing.isEmpty()) return ManifestAppendResult()
+
+        val lines = missing.map(::format)
+        if (missingTarget) path.parent?.let(Files::createDirectories)
+        val separator = if (existingContent.isEmpty() || existingContent.endsWith('\n')) "" else "\n"
+        Files.writeString(path, separator + lines.joinToString("\n", postfix = "\n"), UTF_8, CREATE, APPEND)
+        return ManifestAppendResult(appendedSelectors = lines)
+    }
+
+    private fun mergeCandidates(
+        existing: List<ControllerApiSelector>,
+        candidates: List<ControllerApiSelector>
+    ): List<ControllerApiSelector> {
+        val incoming = candidates.groupBy { it.className }.flatMap { (_, selectors) ->
+            selectors.filterIsInstance<ControllerSelector>().firstOrNull()?.let(::listOf)
+                ?: selectors.distinctBy(::selectorKey)
+        }
+        return incoming.filterNot { candidate -> existing.any { it.covers(candidate) } }
+    }
+
+    private fun format(selector: ControllerApiSelector): String = when (selector) {
+        is ControllerSelector -> "${selector.className}#*"
+        is ControllerMethodSelector -> "${selector.className}#${selector.methodName}" +
+            "(${selector.parameterTypeNames.orEmpty().joinToString(",")})"
+    }
+
+    private fun selectorKey(selector: ControllerApiSelector): Any = when (selector) {
+        is ControllerSelector -> selector.className
+        is ControllerMethodSelector -> listOf(selector.className, selector.methodName, selector.parameterTypeNames)
+    }
+
+    private fun ControllerApiSelector.covers(candidate: ControllerApiSelector): Boolean = when {
+        className != candidate.className -> false
+        this is ControllerSelector -> true
+        this !is ControllerMethodSelector -> false
+        candidate !is ControllerMethodSelector -> false
+        else -> methodName == candidate.methodName &&
+            parameterTypeNames == candidate.parameterTypeNames
     }
 
     private fun parseLine(line: String, lineNumber: Int): Result<ControllerApiSelector> = runCatching {
@@ -84,13 +155,37 @@ internal object ControllerApiManifest {
         val parameters = if (rawParameters.isBlank()) {
             emptyList()
         } else {
-            rawParameters.split(',').map { it.trim() }.also { types ->
+            splitParameterTypes(rawParameters).also { types ->
                 require(types.none { it.isEmpty() }) { "Parameter type must not be empty" }
                 require(types.all(parameterType::matches)) { "Invalid parameter type list: '$rawParameters'" }
             }
         }
 
         ControllerMethodSelector(className, methodName, parameters, lineNumber)
+    }
+
+    private fun splitParameterTypes(rawParameters: String): List<String> {
+        val parameters = mutableListOf<String>()
+        var genericDepth = 0
+        var parameterStart = 0
+
+        rawParameters.forEachIndexed { index, char ->
+            when (char) {
+                '<' -> genericDepth++
+                '>' -> {
+                    require(genericDepth > 0) { "Invalid parameter type list: '$rawParameters'" }
+                    genericDepth--
+                }
+
+                ',' -> if (genericDepth == 0) {
+                    parameters += rawParameters.substring(parameterStart, index).trim()
+                    parameterStart = index + 1
+                }
+            }
+        }
+        require(genericDepth == 0) { "Invalid parameter type list: '$rawParameters'" }
+        parameters += rawParameters.substring(parameterStart).trim()
+        return parameters
     }
 
     private const val FORMAT_ERROR =
