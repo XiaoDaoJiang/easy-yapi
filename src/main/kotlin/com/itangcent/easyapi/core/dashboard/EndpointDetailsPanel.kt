@@ -1,7 +1,11 @@
 package com.itangcent.easyapi.core.dashboard
 
 import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.openapi.fileChooser.FileChooserFactory
+import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileWrapper
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
@@ -38,6 +42,8 @@ import com.itangcent.easyapi.core.export.httpMetadata
 import com.itangcent.easyapi.core.export.grpcMetadata
 import com.itangcent.easyapi.core.export.isGrpc
 import com.itangcent.easyapi.core.ide.support.NotificationUtils
+import com.itangcent.easyapi.core.util.json.GsonUtils
+import com.itangcent.easyapi.core.util.FormatterHelper
 import com.itangcent.easyapi.format.spi.toJson
 import kotlinx.coroutines.*
 import java.awt.BorderLayout
@@ -242,6 +248,8 @@ class EndpointDetailsPanel(
     }
 
     private val jsonFileType = FileTypeManager.getInstance().getFileTypeByExtension("json")
+    private val xmlFileType = FileTypeManager.getInstance().getFileTypeByExtension("xml")
+    private val htmlFileType = FileTypeManager.getInstance().getFileTypeByExtension("html")
 
     /** Editor for pre-request script */
     private val preRequestScriptArea = EditorTextField("", project, jsonFileType).apply {
@@ -254,19 +262,19 @@ class EndpointDetailsPanel(
     }
 
     // Body area (editable, raw JSON with syntax highlighting)
-    /** Editor for request body with JSON syntax highlighting */
+    /** Editor for request body with syntax highlighting matched to the content type */
     private val bodyArea = EditorTextField("", project, jsonFileType).apply {
         setOneLineMode(false)
     }
 
-    /** Button to format/beautify JSON body */
+    /** Button to format/beautify the request body */
     private val formatBodyBtn = JButton("Format").apply {
-        toolTipText = "Format/Beautify JSON"
+        toolTipText = "Format/Beautify body"
         addActionListener { formatRequestBody() }
     }
 
     // Response body area
-    /** Editor for response body with JSON syntax highlighting (read-only) */
+    /** Editor for response body with syntax highlighting matched to the content type (read-only) */
     private val responseBodyArea = EditorTextField("", project, jsonFileType).apply {
         setOneLineMode(false)
         isViewer = true
@@ -295,6 +303,15 @@ class EndpointDetailsPanel(
     /** Raw response body text */
     private var rawResponseBody: String = ""
 
+    /** The response body's content type, used to pick the formatter and highlighting */
+    private var responseContentType: String? = null
+
+    /** The current response body carrier (text / bytes / spilled file); null when no response */
+    private var currentResponseBody: ResponseBody? = null
+
+    /** The raw `Content-Disposition` header of the current response, used to suggest a file name */
+    private var responseContentDisposition: String? = null
+
     /** Whether response is displayed in pretty JSON format */
     private var isPrettyJson: Boolean = true
 
@@ -309,6 +326,13 @@ class EndpointDetailsPanel(
     private val copyResponseBtn = JButton("Copy").apply {
         toolTipText = "Copy response body to clipboard"
         addActionListener { copyResponseBody() }
+    }
+
+    /** Button to save a binary response body to disk; hidden for text responses */
+    private val saveResponseBtn = JButton("Save as…").apply {
+        toolTipText = "Save the response body to a file"
+        isVisible = false
+        addActionListener { saveResponseBody() }
     }
 
     /** Tab pane for request parameters (Path, Params, Headers, Form/Body) */
@@ -328,6 +352,13 @@ class EndpointDetailsPanel(
 
     /** Flag to prevent auto-save during programmatic updates */
     private var isLoading: Boolean = false
+
+    /**
+     * Serialized snapshot of the merged request state right after an endpoint was
+     * displayed. Used to detect whether any actual user edit happened before saving,
+     * so merely opening an endpoint doesn't persist a full snapshot (P1-a).
+     */
+    private var pristineSnapshot: String? = null
 
     /** Debounce timer for auto-save */
     private val autoSaveTimer = Timer(500) {
@@ -389,6 +420,8 @@ class EndpointDetailsPanel(
                 add(responseStatusLabel)
                 add(Box.createHorizontalStrut(8))
                 add(copyResponseBtn)
+                add(Box.createHorizontalStrut(4))
+                add(saveResponseBtn)
                 add(Box.createHorizontalStrut(8))
             }, BorderLayout.EAST)
         }
@@ -686,6 +719,15 @@ class EndpointDetailsPanel(
         return if (host.isEmpty()) "http://localhost:8080" else host
     }
 
+    /**
+     * Returns the cache key (`className#methodName`) of the endpoint currently
+     * displayed in the details panel, or an empty string when nothing is shown.
+     *
+     * Exposed so the dashboard can re-bind the panel to the latest snapshot of
+     * the same endpoint after a rescan (see P0-b).
+     */
+    fun currentKey(): String = currentEndpointKey
+
     fun showEndpoint(endpoint: ApiEndpoint) {
         saveCurrentEditBeforeSwitch()
         saveEndpointScripts()
@@ -724,6 +766,12 @@ class EndpointDetailsPanel(
         } finally {
             isLoading = false
         }
+
+        // Capture the pristine snapshot *after* the UI is fully populated (and after
+        // `isLoading` is cleared), so `doSaveCurrentEdit` can later tell a real edit
+        // from a no-op. The merged content is used, making the comparison idempotent:
+        // re-displaying an endpoint with a stale cache still yields the same snapshot.
+        pristineSnapshot = currentEndpoint?.let { currentEditCache(it) }?.let { GsonUtils.toJson(it) }
     }
 
     /**
@@ -814,7 +862,9 @@ class EndpointDetailsPanel(
             hostComboBox.selectedIndex = 0
         }
 
-        bodyArea.text = cache.body ?: meta.body?.let { it.toJson() } ?: ""
+        endpointContentType = null
+        applyFileType(bodyArea, null)
+        bodyArea.text = EndpointDetailsPanelLogic.mergeJsonBody3(cache.baseBody, meta.body?.let { it.toJson() }, cache.body) ?: ""
     }
 
     private fun loadGrpcFromEndpoint(meta: GrpcMetadata) {
@@ -827,6 +877,8 @@ class EndpointDetailsPanel(
         }
         hostComboBox.selectedIndex = 0
 
+        endpointContentType = null
+        applyFileType(bodyArea, null)
         bodyArea.text = meta.body?.let { it.toJson() } ?: ""
     }
 
@@ -975,8 +1027,9 @@ class EndpointDetailsPanel(
         hasFormData = isFormData
         endpointContentType = cache.contentType ?: contentType
 
+        applyFileType(bodyArea, if (isFormData) null else endpointContentType)
         bodyArea.text = if (!isFormData) {
-            cache.body ?: meta?.body?.let { it.toJson() } ?: ""
+            EndpointDetailsPanelLogic.mergeJsonBody3(cache.baseBody, meta?.body?.let { it.toJson() }, cache.body) ?: ""
         } else ""
 
         rebuildTabs(hasPathParams = pathParams.isNotEmpty(), hasFormParams = isFormData)
@@ -1037,6 +1090,7 @@ class EndpointDetailsPanel(
         hasFormData = isFormData
         endpointContentType = contentType
 
+        applyFileType(bodyArea, if (isFormData) null else endpointContentType)
         bodyArea.text = if (!isFormData) {
             meta?.body?.let { it.toJson() } ?: ""
         } else ""
@@ -1068,9 +1122,15 @@ class EndpointDetailsPanel(
         sendButton.isEnabled = true
         sendButton.text = "Send"
 
+        (currentResponseBody as? ResponseBody.File)?.let { deleteTempFile(it) }
+        currentResponseBody = null
         rawResponseBody = ""
+        responseContentType = null
+        responseContentDisposition = null
         isPrettyJson = true
         prettyToggleBtn.text = "Raw"
+        prettyToggleBtn.isVisible = true
+        saveResponseBtn.isVisible = false
         responseBodyArea.text = ""
         responseHeadersTableModel.rowCount = 0
         responseStatusLabel.text = ""
@@ -1089,10 +1149,18 @@ class EndpointDetailsPanel(
         val demoJson = responseBody.toJson()
         if (demoJson.isBlank() || demoJson == "{}") return
 
+        (currentResponseBody as? ResponseBody.File)?.let { deleteTempFile(it) }
+        currentResponseBody = null
         rawResponseBody = demoJson
+        // The example response is always serialized from the JSON model, so it is JSON.
+        responseContentType = null
+        responseContentDisposition = null
         isPrettyJson = true
         prettyToggleBtn.text = "Raw"
-        responseBodyArea.text = formatJson(demoJson)
+        prettyToggleBtn.isVisible = true
+        saveResponseBtn.isVisible = false
+        applyFileType(responseBodyArea, null)
+        responseBodyArea.text = EndpointDetailsPanelLogic.formatByContentType(demoJson, null)
         responseStatusLabel.text = "Example Response"
         responseStatusLabel.foreground = Color(0x888888)
     }
@@ -1102,6 +1170,7 @@ class EndpointDetailsPanel(
         saveEndpointScripts()
         currentEndpoint = null
         currentEndpointKey = ""
+        pristineSnapshot = null
         nameLabel.text = ""
         methodLabel.text = ""
         pathField.text = ""
@@ -1297,9 +1366,34 @@ class EndpointDetailsPanel(
             sendButton.text = "Send"
 
             rawResponseBody = response.body
+            responseContentType = response.headers.firstOrNull { it.first.equals("Content-Type", ignoreCase = true) }?.second
+            responseContentDisposition = response.headers.firstOrNull { it.first.equals("Content-Disposition", ignoreCase = true) }?.second
+
+            // Clean up any previously spilled temp file before replacing the carrier.
+            (currentResponseBody as? ResponseBody.File)?.let { deleteTempFile(it) }
+            currentResponseBody = response.responseBody
+
             isPrettyJson = true
             prettyToggleBtn.text = "Raw"
-            responseBodyArea.text = if (response.isError) response.body else formatJson(response.body)
+
+            val responseBody = response.responseBody
+            if (responseBody != null && responseBody !is ResponseBody.Text) {
+                // Binary response: show a metadata summary and surface "Save as".
+                val description = ResponseRendererRegistry.lookup(responseBody, responseContentType)
+                    .describe(responseBody, responseContentType)
+                applyFileType(responseBodyArea, null)
+                responseBodyArea.text = description.text
+                saveResponseBtn.isVisible = description.showSaveAs
+                prettyToggleBtn.isVisible = false
+            } else {
+                // Text response: preserve the existing editor/formatting path.
+                saveResponseBtn.isVisible = false
+                prettyToggleBtn.isVisible = true
+                applyFileType(responseBodyArea, responseContentType)
+                val formatted = if (response.isError) response.body
+                else EndpointDetailsPanelLogic.formatByContentType(response.body, responseContentType)
+                responseBodyArea.text = EndpointDetailsPanelLogic.truncateForEditor(formatted)
+            }
 
             when {
                 response.statusCode != null -> {
@@ -1341,7 +1435,7 @@ class EndpointDetailsPanel(
         isPrettyJson = !isPrettyJson
         prettyToggleBtn.text = if (isPrettyJson) "Raw" else "Format"
         responseBodyArea.text = if (isPrettyJson) {
-            formatJson(rawResponseBody)
+            EndpointDetailsPanelLogic.formatByContentType(rawResponseBody, responseContentType)
         } else {
             rawResponseBody
         }
@@ -1355,6 +1449,26 @@ class EndpointDetailsPanel(
             clipboard.setContents(selection, null)
             showCopyNotification()
         }
+    }
+
+    private fun saveResponseBody() {
+        val body = currentResponseBody ?: return
+        val defaultName = ResponseBodyClassifier.extractFilename(responseContentDisposition) ?: "download"
+        val descriptor = FileSaverDescriptor("Save Response", "Choose where to save the response body")
+        val saver = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
+        val wrapper: VirtualFileWrapper? = saver.save(null as VirtualFile?, defaultName)
+        val target: java.io.File = wrapper?.file ?: return
+        val ok = runCatching { ResponseBodyWriter.save(body, target) }.getOrDefault(false)
+        if (ok) {
+            NotificationUtils.notifyInfo(project, "EasyApi", "Response saved to ${target.path}")
+        } else {
+            NotificationUtils.notifyError(project, "EasyApi", "Failed to save response")
+        }
+    }
+
+    private fun deleteTempFile(fileBody: ResponseBody.File) {
+        runCatching { java.nio.file.Files.deleteIfExists(fileBody.path) }
+            .onFailure { LOG.warn("Failed to delete temp response file: ${fileBody.path}", it) }
     }
 
     private fun showCopyNotification() {
@@ -1452,11 +1566,33 @@ class EndpointDetailsPanel(
         return EndpointDetailsPanelLogic.buildFormParams(rows)
     }
 
-    private fun formatJson(json: String) = EndpointDetailsPanelLogic.formatJson(json)
+    /**
+     * Maps a content type to the [com.intellij.openapi.fileTypes.FileType] used for syntax
+     * highlighting, falling back to JSON.
+     */
+    private fun fileTypeForContentType(contentType: String?) =
+        when (EndpointDetailsPanelLogic.formatCategoryOf(contentType)) {
+            EndpointDetailsPanelLogic.FormatCategory.XML -> xmlFileType
+            EndpointDetailsPanelLogic.FormatCategory.HTML -> htmlFileType
+            EndpointDetailsPanelLogic.FormatCategory.JSON -> jsonFileType
+        }
+
+    /**
+     * Switches [editor]'s syntax-highlighting file type to match [contentType] without
+     * disturbing its current text. [EditorTextField.setFileType] recreates the document,
+     * so the text is preserved and re-applied explicitly.
+     */
+    private fun applyFileType(editor: EditorTextField, contentType: String?) {
+        val target = fileTypeForContentType(contentType)
+        if (editor.fileType === target) return
+        val text = editor.text
+        editor.setFileType(target)
+        editor.text = text
+    }
 
     private fun formatRequestBody() {
         val currentText = bodyArea.text
-        val formatted = formatJson(currentText)
+        val formatted = EndpointDetailsPanelLogic.formatByContentType(currentText, endpointContentType)
         if (formatted != currentText) {
             bodyArea.text = formatted
         }
@@ -1495,6 +1631,13 @@ class EndpointDetailsPanel(
         } finally {
             isLoading = false
         }
+
+        // Re-capture the pristine snapshot for the freshly reloaded model content.
+        // Without this, `pristineSnapshot` still holds the pre-reset merged content, so
+        // switching away would serialize the (now model-default) UI state, find it
+        // differs from the stale snapshot, and re-persist a cache row — defeating the
+        // reset's "leave no cached edit" intent.
+        pristineSnapshot = currentEndpoint?.let { currentEditCache(it) }?.let { GsonUtils.toJson(it) }
     }
 
     fun resetEndpoint(endpoint: ApiEndpoint) {
@@ -1581,69 +1724,86 @@ class EndpointDetailsPanel(
 
     private fun doSaveCurrentEdit() {
         val endpoint = currentEndpoint ?: return
+        val cache = currentEditCache(endpoint) ?: return
 
+        // Skip the write when nothing changed since the endpoint was displayed.
+        // Without this, simply opening an endpoint and switching away would persist a
+        // full snapshot (even with zero user edits), "pinning" the stale default values
+        // and masking later source-side default changes (see P1-a).
+        val snapshot = GsonUtils.toJson(cache)
+        if (snapshot == pristineSnapshot) return
+
+        editCacheService.save(endpoint, cache, currentEndpointKey)
+    }
+
+    /**
+     * Builds the [RequestEditCache] representing the current UI state for [endpoint],
+     * or `null` when no endpoint is being edited. Shared by [doSaveCurrentEdit] and the
+     * pristine-snapshot capture so both compare against identical content.
+     */
+    private fun currentEditCache(endpoint: ApiEndpoint): RequestEditCache? {
         if (endpoint.isGrpc) {
-            val cache = GrpcRequestEditCache(
+            return GrpcRequestEditCache(
                 key = currentEndpointKey,
                 name = endpoint.name,
                 host = getSelectedHost(),
                 serviceName = endpoint.grpcMetadata?.serviceName,
                 methodName = endpoint.grpcMetadata?.methodName,
                 packageName = endpoint.grpcMetadata?.packageName,
-                body = bodyArea.text.takeIf { it.isNotBlank() }
-            )
-            editCacheService.save(endpoint, cache, currentEndpointKey)
-        } else {
-            val headers = (0 until headersTableModel.rowCount)
-                .map { row ->
-                    val name = headersTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
-                    val value = headersTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
-                    EditableKeyValue(name, value)
-                }
-                .filter { it.name.isNotEmpty() }
-
-            val pathParams = (0 until pathParamsTableModel.rowCount)
-                .map { row ->
-                    val name = pathParamsTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
-                    val value = pathParamsTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
-                    val desc = pathParamsTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
-                    EditableKeyValue(name, value, desc)
-                }
-                .filter { it.name.isNotEmpty() }
-
-            val queryParams = (0 until paramsTableModel.rowCount)
-                .map { row ->
-                    val name = paramsTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
-                    val value = paramsTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
-                    val desc = paramsTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
-                    EditableKeyValue(name, value, desc)
-                }
-                .filter { it.name.isNotEmpty() }
-
-            val formParams = (0 until formTableModel.rowCount)
-                .map { row ->
-                    val name = formTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
-                    val value = formTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
-                    val desc = formTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
-                    EditableKeyValue(name, value, desc)
-                }
-                .filter { it.name.isNotEmpty() }
-
-            val cache = HttpRequestEditCache(
-                key = currentEndpointKey,
-                name = endpoint.name,
-                path = pathField.text,
-                method = endpoint.httpMetadata?.method?.name ?: endpoint.metadata.protocol,
-                host = getSelectedHost(),
-                headers = headers,
-                pathParams = pathParams,
-                queryParams = queryParams,
-                formParams = formParams,
                 body = bodyArea.text.takeIf { it.isNotBlank() },
-                contentType = endpointContentType
+                baseBody = endpoint.grpcMetadata?.body?.let { it.toJson() }
             )
-            editCacheService.save(endpoint, cache, currentEndpointKey)
         }
+
+        val headers = (0 until headersTableModel.rowCount)
+            .map { row ->
+                val name = headersTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
+                val value = headersTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
+                EditableKeyValue(name, value)
+            }
+            .filter { it.name.isNotEmpty() }
+
+        val pathParams = (0 until pathParamsTableModel.rowCount)
+            .map { row ->
+                val name = pathParamsTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
+                val value = pathParamsTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
+                val desc = pathParamsTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
+                EditableKeyValue(name, value, desc)
+            }
+            .filter { it.name.isNotEmpty() }
+
+        val queryParams = (0 until paramsTableModel.rowCount)
+            .map { row ->
+                val name = paramsTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
+                val value = paramsTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
+                val desc = paramsTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
+                EditableKeyValue(name, value, desc)
+            }
+            .filter { it.name.isNotEmpty() }
+
+        val formParams = (0 until formTableModel.rowCount)
+            .map { row ->
+                val name = formTableModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
+                val value = formTableModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
+                val desc = formTableModel.getValueAt(row, 2)?.toString()?.trim().orEmpty()
+                EditableKeyValue(name, value, desc)
+            }
+            .filter { it.name.isNotEmpty() }
+
+        return HttpRequestEditCache(
+            key = currentEndpointKey,
+            name = endpoint.name,
+            path = pathField.text,
+            method = endpoint.httpMetadata?.method?.name ?: endpoint.metadata.protocol,
+            host = getSelectedHost(),
+            headers = headers,
+            pathParams = pathParams,
+            queryParams = queryParams,
+            formParams = formParams,
+            body = bodyArea.text.takeIf { it.isNotBlank() },
+            baseBody = endpoint.httpMetadata?.body?.let { it.toJson() },
+            contentType = endpointContentType
+        )
     }
 
     private fun setupAutoSaveListeners() {
@@ -1660,7 +1820,11 @@ class EndpointDetailsPanel(
         }, project)
 
         val tableModelListener = TableModelListener { e ->
-            if (e.type == TableModelEvent.UPDATE) {
+            // UPDATE covers editing a cell (including typing into the trailing empty row).
+            // DELETE covers removing a row via the delete column button.
+            // INSERT is intentionally ignored: it is only emitted by `ensureEmptyRow`
+            // appending a blank trailing row, which is not a user edit.
+            if (e.type == TableModelEvent.UPDATE || e.type == TableModelEvent.DELETE) {
                 saveCurrentEdit()
             }
         }
@@ -1723,19 +1887,141 @@ class EndpointDetailsPanel(
 internal object EndpointDetailsPanelLogic {
 
     /**
-     * Pretty-prints a JSON string. Returns the original string if it is blank or not valid JSON.
+     * Text responses longer than this many characters are not loaded into the editor.
+     * A large body would otherwise freeze the EDT / risk OOM when materialized into an
+     * `EditorTextField`.
      */
-    fun formatJson(json: String): String {
-        if (json.isBlank()) return json
-        return runCatching {
-            val gson = com.google.gson.GsonBuilder()
-                .setPrettyPrinting()
-                .disableHtmlEscaping()
-                .create()
-            val element = gson.fromJson(json, com.google.gson.JsonElement::class.java)
-            gson.toJson(element)
-        }.getOrElse { json }
+    const val MAX_EDITOR_RESPONSE_CHARS: Int = 512_000
+
+    /**
+     * Truncates an oversized text body into a human-readable placeholder so the editor is
+     * never handed a multi-megabyte string. Returns the original text when within limits.
+     */
+    fun truncateForEditor(text: String): String {
+        if (text.length <= MAX_EDITOR_RESPONSE_CHARS) return text
+        return buildString {
+            appendLine("[Response body too large to display — ${text.length} characters]")
+            appendLine()
+            appendLine("The body is truncated for performance. Use Save as / Copy to access the full content.")
+        }
     }
+
+
+    /**
+     * Merges the model-generated request body with the user's cached edits.
+     *
+     * The model body is authoritative for the key set, the key order and the
+     * default values; a cached value wins for every key the model still
+     * declares. This keeps user edits across rescans while letting fields
+     * added to the source DTO show up, and drops keys the model no longer has.
+     *
+     * Nested objects are merged recursively. Arrays and scalars are taken from
+     * the cache as-is (a whole-value user edit).
+     *
+     * Falls back to [cachedBody] when either side is blank or is not a JSON
+     * object (XML, plain text, form-encoded bodies), preserving the previous
+     * "cached body wins" behaviour.
+     *
+     * @param modelBody body rendered from the current source model, may be null
+     * @param cachedBody previously persisted body, may be null
+     */
+    fun mergeJsonBody(modelBody: String?, cachedBody: String?): String? {
+        if (cachedBody.isNullOrBlank()) return modelBody
+        if (modelBody.isNullOrBlank()) return cachedBody
+        val model = parseJsonElement(modelBody) ?: return cachedBody
+        val cached = parseJsonElement(cachedBody) ?: return cachedBody
+        if (!model.isJsonObject || !cached.isJsonObject) return cachedBody
+        return prettyJson(mergeJsonObject(model.asJsonObject, cached.asJsonObject))
+    }
+
+    private fun mergeJsonObject(model: com.google.gson.JsonObject, cached: com.google.gson.JsonObject): com.google.gson.JsonObject {
+        val merged = com.google.gson.JsonObject()
+        model.entrySet().forEach { (name, modelValue) ->
+            val cachedValue = cached.get(name)
+            merged.add(
+                name, when {
+                    cachedValue == null -> modelValue
+                    modelValue.isJsonObject && cachedValue.isJsonObject ->
+                        mergeJsonObject(modelValue.asJsonObject, cachedValue.asJsonObject)
+                    else -> cachedValue
+                }
+            )
+        }
+        return merged
+    }
+
+    /**
+     * Three-way merge of the model body against the cached body and the base body.
+     *
+     * The two-way [mergeJsonBody] cannot tell whether a key missing from the cache was
+     * *deleted by the user* or simply *never present when the user edited it*. With the
+     * base body (the model body captured when the edit was saved) we can:
+     *
+     * - key in base, in model, absent from cache  → user deleted it, keep it deleted
+     * - key in base, absent from model, in cache  → source deleted it, drop it (model wins)
+     * - key absent from base, in model            → source added it, carry it over
+     * - key in both model and cache               → recurse (objects) or take cache (scalar/array)
+     *
+     * Falls back to [mergeJsonBody] (two-way) when [baseBody] is blank — i.e. for legacy
+     * caches persisted before the base-body field existed.
+     *
+     * @param baseBody  model-rendered body at save time, may be null (legacy)
+     * @param modelBody body rendered from the current source model, may be null
+     * @param cachedBody previously persisted body, may be null
+     */
+    fun mergeJsonBody3(baseBody: String?, modelBody: String?, cachedBody: String?): String? {
+        if (baseBody.isNullOrBlank()) return mergeJsonBody(modelBody, cachedBody)
+        if (cachedBody.isNullOrBlank()) return modelBody
+        if (modelBody.isNullOrBlank()) return cachedBody
+        val base = parseJsonElement(baseBody) ?: return mergeJsonBody(modelBody, cachedBody)
+        val model = parseJsonElement(modelBody) ?: return cachedBody
+        val cached = parseJsonElement(cachedBody) ?: return cachedBody
+        if (!base.isJsonObject || !model.isJsonObject || !cached.isJsonObject) {
+            return mergeJsonBody(modelBody, cachedBody)
+        }
+        return prettyJson(
+            mergeJsonObject3(base.asJsonObject, model.asJsonObject, cached.asJsonObject)
+        )
+    }
+
+    private fun mergeJsonObject3(
+        base: com.google.gson.JsonObject,
+        model: com.google.gson.JsonObject,
+        cached: com.google.gson.JsonObject
+    ): com.google.gson.JsonObject {
+        val merged = com.google.gson.JsonObject()
+        model.entrySet().forEach { (name, modelValue) ->
+            val cachedValue = cached.get(name)
+            val baseValue = base.get(name)
+            when {
+                cachedValue != null -> {
+                    merged.add(
+                        name,
+                        if (baseValue != null && modelValue.isJsonObject && cachedValue.isJsonObject) {
+                            mergeJsonObject3(baseValue.asJsonObject, modelValue.asJsonObject, cachedValue.asJsonObject)
+                        } else {
+                            cachedValue
+                        }
+                    )
+                }
+                baseValue != null -> {
+                    // Present in base but absent from cache -> the user deleted it. Keep deleted.
+                }
+                else -> {
+                    // Absent from base and cache -> a field the source added. Carry it over.
+                    merged.add(name, modelValue)
+                }
+            }
+        }
+        return merged
+    }
+
+    private fun parseJsonElement(json: String): com.google.gson.JsonElement? = runCatching {
+        com.google.gson.JsonParser.parseString(json)
+    }.getOrNull()
+
+    private fun prettyJson(element: com.google.gson.JsonElement): String =
+        GsonUtils.PRETTY.toJson(element)
 
     /**
      * Substitutes path template variables (e.g. `{id}`) with URL-encoded values
@@ -1779,4 +2065,40 @@ internal object EndpointDetailsPanelLogic {
             }
         }
     }
+
+    /**
+     * The format family a body belongs to, driving formatter selection and syntax highlighting.
+     */
+    enum class FormatCategory { XML, HTML, JSON }
+
+    /**
+     * Classifies a media type into a [FormatCategory].
+     *
+     * Dispatch rules (first match wins):
+     * - `application/xml` / `text/xml` (or any `.../xml`, `.../...+xml`) → [FormatCategory.XML]
+     * - `text/html` / `application/xhtml+xml` → [FormatCategory.HTML]
+     * - otherwise (including null/blank, `application/json`, `text/plain`) → [FormatCategory.JSON]
+     */
+    fun formatCategoryOf(contentType: String?): FormatCategory {
+        val ct = contentType?.trim()?.lowercase() ?: ""
+        return when {
+            // Check HTML before XML: `application/xhtml+xml` also ends with `xml`/contains `+xml`.
+            ct == "text/html" || ct == "application/xhtml+xml" -> FormatCategory.HTML
+            ct.endsWith("xml") || ct.contains("+xml") -> FormatCategory.XML
+            else -> FormatCategory.JSON
+        }
+    }
+
+    /**
+     * Pretty-prints [text] using the formatter matching [contentType].
+     *
+     * The generic formatters live in [FormatterHelper]; this dispatches to the right one
+     * based on the media type and falls back to JSON for unknown or missing types.
+     */
+    fun formatByContentType(text: String, contentType: String?): String =
+        when (formatCategoryOf(contentType)) {
+            FormatCategory.XML -> FormatterHelper.formatXml(text)
+            FormatCategory.HTML -> FormatterHelper.formatHtml(text)
+            FormatCategory.JSON -> FormatterHelper.formatJson(text)
+        }
 }

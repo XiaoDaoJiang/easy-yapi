@@ -3,10 +3,12 @@ package com.itangcent.easyapi.core.rule
 import com.intellij.openapi.project.Project
 import com.itangcent.easyapi.channel.spi.Channel
 import com.itangcent.easyapi.channel.spi.ChannelRegistry
+import com.itangcent.easyapi.core.config.model.bareKey
+import com.itangcent.easyapi.core.config.model.filter
+import com.itangcent.easyapi.core.config.parser.ConfigTextParser
 import com.itangcent.easyapi.core.export.recognizer.ApiClassRecognizer
 import com.itangcent.easyapi.core.export.recognizer.CompositeApiClassRecognizer
 import com.itangcent.easyapi.core.util.json.GsonUtils
-import com.itangcent.easyapi.core.util.text.KeyValueLineParser
 import com.itangcent.easyapi.framework.spi.FrameworkRegistry
 
 /**
@@ -24,36 +26,24 @@ import com.itangcent.easyapi.framework.spi.FrameworkRegistry
  *   malformed JSON value for the header/param keys.
  * - **Soft warnings** (never block): deprecated-but-valid filter forms such
  *   as the bare `class:` prefix; class-context `name()` calls that may be
- *   mistaken for fully-qualified names; keys whose owning channel/framework
- *   is currently disabled in Settings (design C4a / task A5c). Reported back
- *   to the drafter / surfaced on the proposal card, but the proposal still
- *   proceeds.
+ *   mistaken for fully-qualified names; `respondsTo(` probes that guess the
+ *   context kind instead of calling `it.contextType()`; `canonicalText()`
+ *   calls in parameter-context scripts (the element path, not the type);
+ *   keys whose owning channel/framework is currently disabled
+ *   in Settings (design C4a / task A5c). Reported back to the drafter /
+ *   surfaced on the proposal card, but the proposal still proceeds.
  *
  * ## Key catalog
  *
- * The set of "known rule keys" is supplied by [RuleKeyRegistry] when a
- * [Project] is available — that registry combines the shared [RuleKeys],
- * every registered channel's [com.itangcent.easyapi.channel.spi.Channel.ruleKeys],
- * and the implicit keys read by name via `configReader.getFirst(…)`. When
- * [validate] is called without a project (e.g. in lightweight unit tests),
- * the validator falls back to reflecting [RuleKeys] alone — channel-specific
- * and implicit keys are NOT recognized in that mode.
+ * The set of "known rule keys" is supplied by [RuleKeyRegistry] — that
+ * registry combines the shared [RuleKeys], every registered channel's
+ * [com.itangcent.easyapi.channel.spi.Channel.ruleKeys], and the implicit keys
+ * read by name via `configReader.getFirst(…)`.
  *
  * Full duplicate-of-existing-rule detection needs live
  * `get_existing_rules_for_key` data and is out of scope for this v1 pass.
  */
-object RuleProposalValidator {
-
-    /**
-     * The keys whose values are single-line JSON objects, validated by
-     * attempting a JSON parse. Mirrors the preamble's contract.
-     */
-    private val JSON_VALUE_KEYS = setOf(
-        "method.additional.header",
-        "method.additional.param",
-        "method.additional.response.header",
-        "json.additional.field",
-    )
+object RuleProposalValidator : RuleValidator {
 
     /**
      * Valid filter prefixes inside `[...]`, mirroring the preamble's
@@ -66,105 +56,155 @@ object RuleProposalValidator {
     private val CLASS_CONTEXT_SIMPLE_NAME =
         Regex("""(?:containingClass|defineClass)\(\)\s*\??\.\s*name\(\)""")
 
+    /**
+     * Groovy MOP probing of the context kind, e.g.
+     * `it.respondsTo('containingClass')`. Functionally valid but fragile —
+     * the built-in discriminator `it.contextType()` states the kind directly
+     * (issue #756).
+     */
+    private val RESPONDS_TO_USAGE = Regex("""\brespondsTo\s*\(""")
+
+    /**
+     * `it.canonicalText()` on a **parameter** context returns the element
+     * path (`com.example.Foo#bar.userId`), not the parameter's type — a
+     * scalar-type check written with it returns true for every parameter.
+     * Only warned for parameter-context keys.
+     */
+    private val PARAM_CANONICAL_TEXT = Regex("""\bit\.canonicalText\(\)""")
+
     /** Source kind for keys declared in [RuleKeys] (mirrors [RuleKeyRegistry]). */
     private const val SOURCE_GENERAL = "general"
     /** Source kind for keys read by name only (mirrors [RuleKeyRegistry]). */
     private const val SOURCE_IMPLICIT = "implicit"
 
-    /** Fallback known-key set used when no [Project] is supplied. */
-    private val generalKeyNames: Set<String> by lazy { collectGeneralKeyNames() }
-
     /**
      * Validate [content] as a rule file.
      *
-     * Comments (`#`), blank lines, and multi-line groovy value-blocks (delimited
-     * by ```` ``` ````) are tolerated; every non-comment `key[filter]=value`
-     * line is checked.
+     * Parsing is delegated to
+     * [com.itangcent.easyapi.core.config.parser.ConfigTextParser] (the same
+     * parser the config loader uses at export time), so this review sees the
+     * exact [com.itangcent.easyapi.core.config.model.ConfigEntry] set that
+     * would actually take effect — comments, directives (`###if`/`###include`),
+     * and multi-line ```` ``` ```` blocks are all handled by the shared parser
+     * rather than re-implemented here.
      *
-     * @param project the current IntelliJ project. When non-null, the known-key
-     *     set is taken from [RuleKeyRegistry] (general + channel + implicit
-     *     keys). When null, only the shared [RuleKeys] are recognized — use
-     *     the project form in production code so channel-specific keys
-     *     (e.g. `hopp.prerequest`, `yapi.project`) are accepted.
+     * @param project the current IntelliJ project. The known-key set is taken
+     *     from [RuleKeyRegistry] (general + channel + implicit keys).
      */
-    fun validate(content: String, project: Project? = null): RuleValidation {
-        val knownKeyNames = project
-            ?.let { RuleKeyRegistry.getInstance(it).allKeyNames() }
-            ?: generalKeyNames
+    override suspend fun validate(content: String, project: Project): RuleValidation {
+        val knownKeyNames = RuleKeyRegistry.getInstance(project).allKeyNames()
         // A5c: precompute key-name → disabled-source-id lookup (unfiltered
-        // allKeys() view, mirroring findKey) so per-line warnings are O(1).
-        val disabledSourceByName: Map<String, String> =
-            project?.let { buildDisabledSourceMap(it) } ?: emptyMap()
+        // allKeys() view, mirroring findKey) so per-entry warnings are O(1).
+        val disabledSourceByName: Map<String, String> = buildDisabledSourceMap(project)
+        // Scheme lookup: key-name (primary + alias) → the self-describing
+        // RuleKeyScheme, so JSON-value and parameter-context checks read the
+        // declared contract instead of guessing from the key name.
+        val schemeByName: Map<String, RuleKeyScheme> = buildSchemeMap(project)
+        val entries = ConfigTextParser.getInstance(project).parse(content, "proposal")
         val errors = mutableListOf<String>()
         val warnings = mutableListOf<String>()
-        val classContextSimpleNameWarningLines = classContextSimpleNameWarningLines(content)
-        var inBlock = false
-        content.lines().forEachIndexed { idx, raw ->
-            val line = raw.trim()
-            if (line.isEmpty()) return@forEachIndexed
-            // Plain comment (### is a directive, handled elsewhere; treat as
-            // non-rule for this check).
-            if (line.startsWith("#")) return@forEachIndexed
-            val lineNo = idx + 1
-            if (lineNo in classContextSimpleNameWarningLines) {
-                warnings += "line $lineNo: class-context name() returns a simple class name; " +
-                    "use qualifiedName() for FQN/package comparisons."
+
+        // Pure-text soft warnings: these match against the raw source (not the
+        // parsed entries) so they keep the exact in-block line number even for
+        // multi-line ``` blocks, where ConfigEntry.lineNo points at the block's
+        // opening line.
+        for (lineNo in matchWarningLines(content, CLASS_CONTEXT_SIMPLE_NAME)) {
+            warnings += "line $lineNo: class-context name() returns a simple class name; " +
+                "use qualifiedName() for FQN/package comparisons."
+        }
+        for (lineNo in matchWarningLines(content, RESPONDS_TO_USAGE)) {
+            warnings += "line $lineNo: respondsTo() guesses the context kind from the " +
+                "method surface; use it.contextType() (returns 'class'/'method'/" +
+                "'field'/'param') instead."
+        }
+
+        for (entry in entries) {
+            val lineNo = entry.lineNo
+            val key = entry.bareKey()
+            val filter = entry.filter()
+
+            // An empty `[]` filter is not valid syntax: the parser preserves
+            // the whole key, and the filter extension reports null — surface it
+            // explicitly rather than letting it pass as a bare key.
+            if (filter == null && entry.key.contains('[') && entry.key.endsWith(']')) {
+                errors += "line ${lineNo ?: "?"}: empty filter '[]' on key '$key' is not valid."
+                continue
             }
-            // Multi-line groovy value-block: scan each body line for semantic
-            // warnings above, but skip structural key=value validation because
-            // the body is a free-form script.
-            if (inBlock) {
-                if (line == "```") inBlock = false
-                return@forEachIndexed
-            }
-            val parsed = KeyValueLineParser.splitKeyFilterValue(line) ?: run {
-                // Not a key=value line — skip (directives, stray text). We do
-                // not error on every non-kv line to avoid false positives on
-                // constructs the parser supports but this checker doesn't model.
-                return@forEachIndexed
-            }
-            val (key, filter, value) = parsed
 
             if (key !in knownKeyNames) {
-                errors += "line $lineNo: unknown rule key '$key' (not in list_rule_keys)."
-                return@forEachIndexed
+                errors += "line ${lineNo ?: "?"}: unknown rule key '$key' (not in list_rule_keys)."
+                continue
             }
             // A5c: soft warning when the key's owning channel/framework is
             // disabled in Settings (never blocks the proposal).
             disabledSourceByName[key]?.let { src ->
-                warnings += "line $lineNo: key '$key' belongs to '$src', " +
+                warnings += "line ${lineNo ?: "?"}: key '$key' belongs to '$src', " +
                     "which is currently disabled in Settings."
             }
             if (filter != null) {
                 val prefixIssue = checkFilterPrefix(filter)
                 when (prefixIssue) {
                     is FilterIssue.Invalid ->
-                        errors += "line $lineNo: invalid filter '$filter'. " +
+                        errors += "line ${lineNo ?: "?"}: invalid filter '$filter'. " +
                             "Valid prefixes: \$class:, @, #regex:, #<tag>, !, groovy:."
                     is FilterIssue.Deprecated ->
-                        warnings += "line $lineNo: filter '$filter' uses the " +
+                        warnings += "line ${lineNo ?: "?"}: filter '$filter' uses the " +
                             "deprecated bare 'class:' form — prefer '\$class:'."
                     null -> Unit
                 }
             }
-            if (key in JSON_VALUE_KEYS && value.isNotBlank()) {
+            val value = entry.value
+            if (schemeByName[key]?.jsonValue == true && value.isNotBlank()) {
                 val v = value.trim()
-                // Only validate inline single-line JSON here; a groovy
-                // value-block opens with `` ` `` and is script, not JSON.
+                // A groovy value starts with `groovy:` and is script, not JSON.
                 if (!v.startsWith("groovy:") && !isParsableJson(v)) {
-                    errors += "line $lineNo: value for '$key' is not valid JSON " +
+                    errors += "line ${lineNo ?: "?"}: value for '$key' is not valid JSON " +
                         "(expected an object like {\"name\":\"…\",\"value\":\"…\"})."
                 }
             }
-            if (value.trim() == "```" || value.trim().endsWith("```")) {
-                inBlock = true
+            if (value.startsWith("groovy:")) {
+                warnCanonicalTextOnParam(key, value, lineNo, schemeByName[key], warnings)
             }
         }
         return RuleValidation(errors = errors, warnings = warnings)
     }
 
-    private fun classContextSimpleNameWarningLines(content: String): Set<Int> =
-        CLASS_CONTEXT_SIMPLE_NAME.findAll(content).mapNotNullTo(linkedSetOf()) { match ->
+    /**
+     * Soft warning when a parameter-context rule's script calls
+     * `it.canonicalText()` — the element path, not the parameter's type.
+     */
+    private fun warnCanonicalTextOnParam(
+        key: String,
+        script: String,
+        lineNo: Int?,
+        scheme: RuleKeyScheme?,
+        warnings: MutableList<String>
+    ) {
+        // A parameter-context key is declared by its scheme, not guessed from
+        // the name. A key with no scheme (unmigrated) falls back to no warning.
+        if (scheme?.contextKinds?.contains(ContextKind.PARAMETER) != true) return
+        if (!PARAM_CANONICAL_TEXT.containsMatchIn(script)) return
+        val where = lineNo?.let { "line $it: " } ?: ""
+        warnings += "${where}canonicalText() on a parameter context returns the element " +
+            "path (class#method.param), not the parameter's type — use type().name() for type checks."
+    }
+
+    /**
+     * Builds a key-name (primary + alias) → [RuleKeyScheme] lookup from the
+     * registry's full catalog, so JSON-value and parameter-context checks are
+     * O(1) per entry and read the key's declared contract.
+     */
+    private fun buildSchemeMap(project: Project): Map<String, RuleKeyScheme> =
+        RuleKeyRegistry.getInstance(project).allKeys()
+            .flatMap { info -> info.key.allNames.map { it to info.key.scheme } }
+            .toMap()
+
+    /**
+     * Maps [pattern] matches in [content] to 1-based line numbers, skipping
+     * matches on comment lines. Shared by the semantic soft warnings.
+     */
+    private fun matchWarningLines(content: String, pattern: Regex): Set<Int> =
+        pattern.findAll(content).mapNotNullTo(linkedSetOf()) { match ->
             val matchStart = match.range.first
             val lineStart = if (matchStart == 0) {
                 0
@@ -192,9 +232,6 @@ object RuleProposalValidator {
         GsonUtils.fromJson<Any>(text)
         true
     }.getOrDefault(false)
-
-    private fun collectGeneralKeyNames(): Set<String> =
-        RuleKey.collectFrom(RuleKeys).flatMap { it.allNames }.toSet()
 
     /**
      * Builds a lookup from every known rule-key name (primary + aliases) to
@@ -282,18 +319,4 @@ object RuleProposalValidator {
         object Invalid : FilterIssue()
         object Deprecated : FilterIssue()
     }
-}
-
-/**
- * Result of [RuleProposalValidator.validate].
- *
- * @param errors hard failures that block the proposal from being staged.
- * @param warnings soft notes surfaced on the proposal card (never block).
- */
-data class RuleValidation(
-    val errors: List<String>,
-    val warnings: List<String>
-) {
-    /** `true` when there are no blocking errors. */
-    val ok: Boolean get() = errors.isEmpty()
 }
