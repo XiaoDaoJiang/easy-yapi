@@ -302,6 +302,32 @@ When a `#regex:` filter matches, the captured groups are available in the value 
 
 ---
 
+## Value Formats
+
+The engine decides how a value is evaluated **by the value's shape**, not by
+the key — there is no per-key execution mode. The same key can be written in
+any of the formats below; pick by whether the value is static, already present
+on the element, or must be computed from project code.
+
+| Format | Meaning | Example |
+|--------|---------|---------|
+| *(literal)* | Value injected as-is (default); multi-line values in triple backticks | `field.ignore=true`, `postman.test=\`\`\`...\`\`\`` |
+| `groovy:` | Run a Groovy script with the `it` context; its **result** becomes the value | `method.additional.header=groovy: it.name()` |
+| `@Fqn` / `@Fqn#attr` | Pull a value from an **annotation** on the element (default attribute `value()`) | `method.doc=@io.swagger.v3.oas.annotations.Operation#description` |
+| `#tag` | Pull a value from a **JavaDoc/KDoc tag** on the element | `method.return=#return` |
+| `${n}` | Substituted with a `#regex:` filter's captured groups | `json.rule.convert[#regex:ApiResult<(.*?)>]=${1}` |
+
+The `groovy:` engine binds `it`, `session`/`S`, `localStorage`, `config`/`C`,
+`files`/`F`, `httpClient`, `helper`/`H`, `runtime`/`R` (see
+[Groovy Binding Reference](#groovy-binding-reference)); the script must
+`return` the value string or `return null` to skip.
+
+Do not confuse the **filter** tokens (`$class:`, `@`, `#tag`, `#regex:`, `!`)
+in `[...]`, which decide *whether* a rule applies, with the same `@` / `#`
+tokens in the **value** position, which *source* the value from the element.
+
+---
+
 ## Aggregation Modes
 
 When multiple rules match the same element, the aggregation mode determines how the values combine:
@@ -491,7 +517,7 @@ the same catalog when scanning your project.
 | **Static Auth (API Key / Basic)** | Security filter/interceptor calling `request.getHeader("X-API-Key")` / `"Authorization"` starting `Basic `; or custom `@ApiKeyAuth` annotation. Discover via `find_classes_by_annotation` + `get_psi_class_info` (read filter body for `getHeader(...)`). | **API-key-in-header:**<br>`method.additional.header={"name":"X-API-Key","value":"${apiKey}","desc":"api key","required":true}`<br>**API-key-in-query:**<br>`method.additional.param={"name":"key","type":"String","value":"${apiKey}","required":true,"desc":"api key"}`<br>**Basic auth:**<br>`method.additional.header={"name":"Authorization","value":"Basic ${basicAuth}","desc":"http basic credentials","required":true}`<br>**No script** — the user supplies the credential once in the Environments panel (base64-encode `user:pass` for Basic). |
 | **Per-Request Injection (Correlation / Idempotency)** | Filter/interceptor reading `request.getHeader("X-Request-Id")` / `"X-Correlation-Id"` / `"X-Trace-Id"`; or `Idempotency-Key` header on POST/PUT methods. | **Correlation ID** (global, pre-request):<br>`postman.prerequest=pm.request.headers.upsert("X-Request-Id", java.util.UUID.randomUUID().toString())`<br>**Idempotency key** (scoped to mutating methods — never unscoped):<br>`postman.prerequest[groovy: it.methodType().name() == "POST" || it.methodType().name() == "PUT"]=pm.request.headers.upsert("Idempotency-Key", java.util.UUID.randomUUID().toString())`<br>Uses `pm.request.headers.upsert(...)` (add-or-replace, case-insensitive), not `.add(...)` (which would duplicate). |
 | **Request Signing (HMAC)** | Filter/interceptor using `javax.crypto.Mac` / `HmacSHA256` / `Sha256.hmac`; reads `appSecret`/`appKey`/`accessKeyId`; or custom `@SignedRequest` annotation. | **Pre-request signing script** (computes HMAC, attaches signature header):<br>`postman.prerequest[groovy: it.containingClass()?.qualifiedName().startsWith("com.example.api.")]=def mac = javax.crypto.Mac.getInstance("HmacSHA256"); mac.init(new javax.crypto.spec.SecretKeySpec("${appSecret}".getBytes("UTF-8"), "HmacSHA256")); def stringToSign = pm.request.url + "\n" + pm.request.body; def raw = mac.doFinal(stringToSign.getBytes("UTF-8")); def sig = raw.collect { String.format("%02x", it) }.join(); pm.request.headers.upsert("X-Signature", sig)`<br>**No hardcoded secret** — `${appSecret}` is always an env-var reference.<br>⚠ For non-trivial signing (AWS SigV4, etc.) treat as a scaffold + call `ask_clarification` for the canonical-string / algorithm variant. |
-| **401-Refresh** | Refresh endpoint at `/refresh`, `/token/refresh`; OR user explicitly asks for auto-refresh; OR documented "if 401, call /refresh" convention. | **Post-call rule** (detects 401, calls refresh, sets new header, forces retry):<br>`http.call.after=groovy: if (response.code() == 401) { def refreshReq = new com.itangcent.EasyYapi.core.http.HttpRequest("https://api.example.com/refresh", "POST", java.util.Collections.emptyList(), java.util.Collections.emptyList(), "grant_type=refresh_token", java.util.Collections.emptyList(), java.util.Collections.emptyList(), null); def resp = httpClient.executeSync(refreshReq); def newToken = new groovy.json.JsonSlurper().parseText(resp.body).access_token; if (newToken) { request.setHeader("Authorization", "Bearer " + newToken); response.discard() } }`<br>**Retry limit:** up to 3 (enforced by `HttpClientScriptInterceptor`). The retry re-sends the mutated request wrapper, so `request.setHeader(...)` + `response.discard()` is sufficient — `pm` is NOT available in `http.call.after` (use `session.set(...)` for cross-request persistence if needed).<br>⚠ Keep the refresh endpoint itself script-free (recursion guard limits sub-request hooks to depth < 2). Wrap in `try/catch`. |
+| **401-Refresh** | Refresh endpoint at `/refresh`, `/token/refresh`; OR user explicitly asks for auto-refresh; OR documented "if 401, call /refresh" convention. | **Post-call rule** (detects 401, calls refresh, sets new header, forces retry):<br>`http.call.after=groovy: if (response.code() == 401) { def refreshReq = new com.itangcent.easyapi.core.http.HttpRequest("https://api.example.com/refresh", "POST", java.util.Collections.emptyList(), java.util.Collections.emptyList(), "grant_type=refresh_token", java.util.Collections.emptyList(), java.util.Collections.emptyList(), null); def resp = httpClient.executeSync(refreshReq); def newToken = new groovy.json.JsonSlurper().parseText(resp.body).access_token; if (newToken) { request.setHeader("Authorization", "Bearer " + newToken); response.discard() } }`<br>**Retry limit:** up to 3 (enforced by `HttpClientScriptInterceptor`). The retry re-sends the mutated request wrapper, so `request.setHeader(...)` + `response.discard()` is sufficient — `pm` is NOT available in `http.call.after` (use `session.set(...)` for cross-request persistence if needed).<br>⚠ Keep the refresh endpoint itself script-free (recursion guard limits sub-request hooks to depth < 2). Wrap in `try/catch`. |
 
 > **Detection tip for the AI assistant:** before proposing a workflow bundle,
 > probe endpoints with `list_project_endpoints`; confirm the producer/consumer

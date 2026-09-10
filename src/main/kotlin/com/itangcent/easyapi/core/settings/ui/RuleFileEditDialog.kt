@@ -8,6 +8,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.itangcent.easyapi.core.ai.ui.AiChatPanel
 import com.itangcent.easyapi.core.config.ConfigReader
+import com.itangcent.easyapi.core.config.RuleFileTextIo
 import com.itangcent.easyapi.core.ide.support.NotificationUtils
 import com.itangcent.easyapi.core.logging.IdeaLog
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +35,8 @@ import javax.swing.JScrollPane
  *
  * On OK:
  * - If the name changed, renames the file on disk (same directory).
- * - Writes the (possibly edited) content via `Files.writeString`.
+ * - Writes the (possibly edited) content as UTF-8 with a BOM
+ *   (see [RuleFileTextIo]).
  * - Triggers `ConfigReader.getInstance(project).reload()` so new rules take
  * effect immediately.
  *
@@ -108,6 +110,11 @@ class RuleFileEditDialog(
     }
 
     init {
+        // A fresh editor session starts a fresh AI conversation: the project-scoped
+        // session (memory) otherwise survives dialog close/reopen and would replay
+        // stale transcripts into the next Chat/Magic run (observed as step-1
+        // message counts growing across reopens).
+        aiChatPanel.resetConversation()
         val file = Paths.get(filePath)
         title = "Edit Rule File: ${file.fileName}"
         init()
@@ -123,6 +130,10 @@ class RuleFileEditDialog(
 
     private fun onMagic() {
         aiPanelHolder.isVisible = true
+        // Magic always starts from scratch: cancel any still-running (possibly
+        // stuck) turn and drop the previous conversation so each run begins with
+        // a fresh, small transcript instead of accumulating history.
+        aiChatPanel.resetConversation()
         aiChatPanel.refreshConfiguredState()
         revalidateDialog()
         val name = nameField.text.trim().ifBlank { Paths.get(filePath).fileName.toString() }
@@ -227,7 +238,7 @@ class RuleFileEditDialog(
     private fun loadContentAsync() {
         scope.launch {
             val content = withContext(Dispatchers.IO) {
-                runCatching { Files.readString(Paths.get(filePath)) }
+                runCatching { RuleFileTextIo.readUtf8StrippingBom(Paths.get(filePath)) }
                     .onFailure { LOG.warn("Failed to read rule file $filePath", it) }
                     .getOrElse { "" }
             }
@@ -312,7 +323,7 @@ class RuleFileEditDialog(
                     }
                 }
                 // Write content.
-                runCatching { Files.writeString(newPath, content) }
+                runCatching { RuleFileTextIo.writeUtf8WithBom(newPath, content) }
                     .onFailure {
                         LOG.warn("Failed to write rule file $newPath", it)
                         withContext(Dispatchers.Main) {
