@@ -47,7 +47,7 @@ fun `parses whole Controller selectors`() {
 Run:
 
 ```powershell
-$env:JAVA_HOME='E:\Program Files\Java\temurin-17.0.10'
+$env:JAVA_HOME='<path-to-jdk-17>'
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 .\gradlew.bat test --tests "com.itangcent.easyapi.core.ide.sync.ControllerApiManifestTest"
 ```

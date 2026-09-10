@@ -15,13 +15,13 @@
 Run every command from:
 
 ```text
-E:\IdeaProjects\easy-yapi\.worktrees\openapi-multi-document
+<repo-root>/.worktrees/openapi-multi-document
 ```
 
 Initialize each new PowerShell session with JDK 17:
 
 ```powershell
-$env:JAVA_HOME='E:\Program Files\Java\temurin-17.0.10'
+$env:JAVA_HOME='<path-to-jdk-17>'
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 ```
 

@@ -11,10 +11,10 @@ violation raised while resolving listed methods on a background thread.
 Both separators support an optional fully qualified parameter list:
 
 ```text
-com.gyenno.scoring.project.api.PatientApi#queryPatientList
-com.gyenno.scoring.project.api.PatientApi#queryPatientList(java.lang.String)
-com.gyenno.scoring.project.api.PatientApi.queryPatientList
-com.gyenno.scoring.project.api.PatientApi.queryPatientList(java.lang.String)
+com.example.user.api.UserApi#queryUserList
+com.example.user.api.UserApi#queryUserList(java.lang.String)
+com.example.user.api.UserApi.queryUserList
+com.example.user.api.UserApi.queryUserList(java.lang.String)
 ```
 
 The parser keeps producing the existing `ControllerMethodSelector`; endpoint

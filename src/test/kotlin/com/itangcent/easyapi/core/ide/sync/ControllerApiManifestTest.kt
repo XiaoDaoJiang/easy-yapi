@@ -223,8 +223,8 @@ class ControllerApiManifestTest {
     fun `parses Java style dot selectors`() {
         val result = ControllerApiManifest.parse(
             """
-            com.gyenno.scoring.project.api.PatientApi.queryPatientList
-            com.gyenno.scoring.project.api.PatientApi.queryPatient(java.lang.String)
+            com.example.user.api.UserApi.queryUserList
+            com.example.user.api.UserApi.queryUser(java.lang.String)
             """.trimIndent()
         )
 
@@ -232,14 +232,14 @@ class ControllerApiManifestTest {
             "Should parse simple and signature-qualified dot selectors",
             listOf(
                 ControllerMethodSelector(
-                    "com.gyenno.scoring.project.api.PatientApi",
-                    "queryPatientList",
+                    "com.example.user.api.UserApi",
+                    "queryUserList",
                     null,
                     1
                 ),
                 ControllerMethodSelector(
-                    "com.gyenno.scoring.project.api.PatientApi",
-                    "queryPatient",
+                    "com.example.user.api.UserApi",
+                    "queryUser",
                     listOf("java.lang.String"),
                     2
                 )

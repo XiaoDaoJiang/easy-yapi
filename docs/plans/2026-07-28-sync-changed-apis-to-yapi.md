@@ -20,7 +20,7 @@
 
 ```text
 # 本迭代需要同步的接口
-com.gyenno.pdms.modules.selfassessment.controller.SelfAssessmentController#taskQrCode
+com.example.user.controller.UserController#getProfile
 com.acme.user.UserController#createUser(com.acme.user.CreateUserRequest)
 com.acme.order.OrderController#cancel(java.lang.Long)
 ```

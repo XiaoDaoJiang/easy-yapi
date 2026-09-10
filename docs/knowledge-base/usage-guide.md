@@ -93,8 +93,8 @@ The dedicated `sync` subdirectory keeps the manifest outside the non-recursive `
 
 ```text
 # Equivalent simple forms when the method is not overloaded
-com.gyenno.pdms.modules.selfassessment.controller.SelfAssessmentController#taskQrCode
-com.gyenno.scoring.project.api.PatientApi.queryPatientList
+com.example.user.controller.UserController#getProfile
+com.example.user.api.UserApi.queryUserList
 
 # Equivalent signature forms for overloaded methods
 com.acme.user.UserController#createUser(com.acme.user.CreateUserRequest)

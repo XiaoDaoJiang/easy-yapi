@@ -25,8 +25,8 @@ Add a plain JUnit test covering both dot forms:
 fun `parses Java style dot selectors`() {
     val result = ControllerApiManifest.parse(
         """
-        com.gyenno.scoring.project.api.PatientApi.queryPatientList
-        com.gyenno.scoring.project.api.PatientApi.queryPatient(java.lang.String)
+        com.example.user.api.UserApi.queryUserList
+        com.example.user.api.UserApi.queryUser(java.lang.String)
         """.trimIndent()
     )
 
@@ -34,14 +34,14 @@ fun `parses Java style dot selectors`() {
         "Should parse simple and signature-qualified dot selectors",
         listOf(
             ControllerMethodSelector(
-                "com.gyenno.scoring.project.api.PatientApi",
-                "queryPatientList",
+                "com.example.user.api.UserApi",
+                "queryUserList",
                 null,
                 1
             ),
             ControllerMethodSelector(
-                "com.gyenno.scoring.project.api.PatientApi",
-                "queryPatient",
+                "com.example.user.api.UserApi",
+                "queryUser",
                 listOf("java.lang.String"),
                 2
             )
@@ -61,7 +61,7 @@ indistinguishable from `class.method` at parse time.
 Run:
 
 ```powershell
-$env:JAVA_HOME='E:\Program Files\Java\temurin-17.0.10'
+$env:JAVA_HOME='<path-to-jdk-17>'
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 .\gradlew.bat test --tests "com.itangcent.easyapi.core.ide.sync.ControllerApiManifestTest"
 ```
