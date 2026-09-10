@@ -1,10 +1,197 @@
 package com.itangcent.easyapi.core.ide.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNoException
 import org.junit.Test
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
 
 class ControllerApiManifestTest {
+
+    @Test
+    fun `creates a missing manifest with formatted candidates`() {
+        val manifest = temporaryManifest()
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create", "java.lang.String"))
+        )
+
+        assertTrue("New manifest should be written", result.written)
+        assertEquals(
+            "New candidates should use hash selectors with parameter types",
+            "com.acme.UserController#create(java.lang.String)\n",
+            Files.readString(manifest)
+        )
+    }
+
+    @Test
+    fun `round trips appended generic parameter types`() {
+        val manifest = temporaryManifest()
+        val selector = ControllerMethodSelector(
+            "com.acme.UserController",
+            "create",
+            listOf(
+                "java.util.Map<java.lang.String,java.util.List<com.acme.Foo>>",
+                "java.lang.String"
+            ),
+            1
+        )
+
+        ControllerApiManifest.append(manifest, listOf(ChangedApiCandidate(selector, "test")))
+        val parsed = ControllerApiManifest.parse(Files.readString(manifest))
+
+        assertTrue("Appended canonical generic types should parse", parsed.errors.isEmpty())
+        assertEquals("Parsed selector should preserve canonical generic types", listOf(selector), parsed.selectors)
+    }
+
+    @Test
+    fun `no signature selector does not cover incoming signature`() {
+        val manifest = temporaryManifest("com.acme.UserController#create\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create", "java.lang.String"))
+        )
+
+        assertTrue("Signature-qualified candidate should be appended", result.written)
+        assertEquals(
+            "Simple and signature-qualified selectors should both remain",
+            "com.acme.UserController#create\ncom.acme.UserController#create(java.lang.String)\n",
+            Files.readString(manifest)
+        )
+    }
+
+    @Test
+    fun `preserves prior content and appends only missing candidates`() {
+        val manifest = temporaryManifest("# keep this comment\n\ncom.acme.UserController#get()\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(
+                methodCandidate("com.acme.UserController", "get"),
+                methodCandidate("com.acme.UserController", "create", "java.lang.String")
+            )
+        )
+
+        assertTrue("A missing candidate should be appended", result.written)
+        assertEquals(
+            "Existing comments, whitespace and selectors should stay unchanged",
+            "# keep this comment\n\ncom.acme.UserController#get()\n" +
+                "com.acme.UserController#create(java.lang.String)\n",
+            Files.readString(manifest)
+        )
+    }
+
+    @Test
+    fun `treats hash and dot selectors as duplicates`() {
+        val manifest = temporaryManifest("com.acme.UserController.create(java.lang.String)\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create", "java.lang.String"))
+        )
+
+        assertFalse("Equivalent dot selector should not be appended again", result.written)
+        assertEquals("Existing selector spelling must be preserved", "com.acme.UserController.create(java.lang.String)\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `existing class wildcard covers incoming methods`() {
+        val manifest = temporaryManifest("com.acme.UserController#*\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create", "java.lang.String"))
+        )
+
+        assertFalse("Existing class wildcard should cover the method", result.written)
+        assertEquals("Wildcard manifest must remain unchanged", "com.acme.UserController#*\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `incoming class wildcard covers same controller methods`() {
+        val manifest = temporaryManifest()
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(
+                methodCandidate("com.acme.UserController", "create", "java.lang.String"),
+                classCandidate("com.acme.UserController"),
+                methodCandidate("com.acme.UserController", "get")
+            )
+        )
+
+        assertTrue("Incoming wildcard should be appended", result.written)
+        assertEquals("Wildcard should replace same-controller incoming methods", "com.acme.UserController#*\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `invalid existing manifest causes zero write`() {
+        val manifest = temporaryManifest("com.acme.UserController#\n")
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create"))
+        )
+
+        assertFalse("Invalid manifest must not be changed", result.written)
+        assertTrue("Invalid manifest should report parse errors", result.errors.isNotEmpty())
+        assertEquals("Invalid content must remain unchanged", "com.acme.UserController#\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `empty merge causes zero write`() {
+        val manifest = temporaryManifest("com.acme.UserController#create()\n")
+
+        val result = ControllerApiManifest.append(manifest, emptyList())
+
+        assertFalse("Empty candidate merge must not write", result.written)
+        assertEquals("Existing content must remain unchanged", "com.acme.UserController#create()\n", Files.readString(manifest))
+    }
+
+    @Test
+    fun `directory target causes zero write`() {
+        val directory = Files.createTempDirectory("controller-api-manifest")
+
+        val result = ControllerApiManifest.append(
+            directory,
+            listOf(methodCandidate("com.acme.UserController", "create"))
+        )
+
+        assertFalse("Directory targets must not be written", result.written)
+        assertTrue("Directory targets must report a rejected append", result.rejection != null)
+        assertTrue("Directory target must remain a directory", Files.isDirectory(directory))
+        assertTrue("Directory target must stay empty", Files.list(directory).use { it.noneMatch { true } })
+    }
+
+    @Test
+    fun `dangling symbolic link causes zero write`() {
+        val directory = Files.createTempDirectory("controller-api-manifest")
+        val target = directory.resolve("target.txt")
+        val manifest = directory.resolve("sync-apis.txt")
+        try {
+            Files.createSymbolicLink(manifest, target)
+        } catch (e: UnsupportedOperationException) {
+            assumeNoException("Symbolic links are unsupported", e)
+        } catch (e: SecurityException) {
+            assumeNoException("Symbolic link creation is denied", e)
+        } catch (e: IOException) {
+            assumeNoException("Symbolic link creation is unavailable", e)
+        }
+
+        val result = ControllerApiManifest.append(
+            manifest,
+            listOf(methodCandidate("com.acme.UserController", "create"))
+        )
+
+        assertFalse("Symbolic link targets must not be written", result.written)
+        assertTrue("The symbolic link must remain", Files.isSymbolicLink(manifest))
+        assertFalse("The dangling link target must stay missing", Files.exists(target))
+    }
 
     @Test
     fun `parses comments simple selectors and signature selectors`() {
@@ -101,4 +288,20 @@ class ControllerApiManifestTest {
         assertEquals("Both malformed selectors should be reported", listOf(1, 2), result.errors.map { it.lineNumber })
         assertTrue("Malformed selectors must not be returned", result.selectors.isEmpty())
     }
+
+    private fun temporaryManifest(content: String? = null): Path {
+        val directory = Files.createTempDirectory("controller-api-manifest")
+        return directory.resolve(".easyapi").resolve("sync").resolve("sync-apis.txt").also { manifest ->
+            if (content != null) {
+                Files.createDirectories(manifest.parent)
+                Files.writeString(manifest, content)
+            }
+        }
+    }
+
+    private fun classCandidate(className: String) =
+        ChangedApiCandidate(ControllerSelector(className, 1), "test")
+
+    private fun methodCandidate(className: String, methodName: String, vararg parameterTypes: String) =
+        ChangedApiCandidate(ControllerMethodSelector(className, methodName, parameterTypes.toList(), 1), "test")
 }
