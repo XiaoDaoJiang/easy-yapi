@@ -9,51 +9,63 @@ permissions:
   contents: read
 
 concurrency:
-  group: upstream-sync-validation-${{ github.ref }}
+  group: upstream-sync-validation-${{ github.sha }}
   cancel-in-progress: false
 
+env:
+  CANDIDATE: 2f25bdf6cedb4e3d01b7258d0ac25d8e428b9ae1
+
 jobs:
-  snapshot:
+  ancestry:
     if: github.repository == 'XiaoDaoJiang/easy-yapi'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a386d3fb3aabd921934a645a5cc121c463bfb3c7
+          ref: ${{ env.CANDIDATE }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify and bundle original Git histories
+      - name: Verify original ancestry and fork preservation
         shell: bash
         run: |
           set -euo pipefail
-          F=a386d3fb3aabd921934a645a5cc121c463bfb3c7
-          I=32538430a5db59e1a096d5b359304f044feecfa6
-          U0=62e309710e07c00c8d3fd9e2ec159c179eea1517
-          U1=3154e8fe96225bfdfe1ed542e6047d3d27ba2147
-          git fetch --no-tags https://github.com/tangcent/easy-yapi.git refs/heads/master:refs/remotes/upstream/master
-          test "$(git rev-parse origin/master)" = "$F"
-          test "$(git rev-parse refs/remotes/upstream/master)" = "$U1"
-          git merge-base --is-ancestor "$I" "$F"
-          git merge-base --is-ancestor "$U0" "$U1"
-          test "$(git rev-parse "$I^{tree}")" = "$(git rev-parse "$U0^{tree}")"
-          test "$(git rev-list --count "$U0..$U1")" = 18
-          git update-ref refs/heads/frozen-fork "$F"
-          git update-ref refs/heads/frozen-upstream "$U1"
-          mkdir -p validation-evidence
-          git bundle create validation-evidence/easy-yapi-frozen.bundle refs/heads/frozen-fork refs/heads/frozen-upstream
-          git bundle verify validation-evidence/easy-yapi-frozen.bundle
-          git diff --name-status "$I" "$F" > validation-evidence/fork-delta.txt
-          git diff --name-status "$U0" "$U1" > validation-evidence/upstream-delta.txt
-          git log --oneline "$U0..$U1" > validation-evidence/upstream-commits.txt
-      - uses: actions/upload-artifact@v7
-        with:
-          name: frozen-git-history
-          path: validation-evidence/
-          retention-days: 7
-          if-no-files-found: error
+          python - <<'PY'
+          import subprocess, pathlib
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          F='a386d3fb3aabd921934a645a5cc121c463bfb3c7'
+          I='32538430a5db59e1a096d5b359304f044feecfa6'
+          U0='62e309710e07c00c8d3fd9e2ec159c179eea1517'
+          U1='3154e8fe96225bfdfe1ed542e6047d3d27ba2147'
+          bridge='85fb1da464dcffe036d46780cc3fbbbc6a2e607e'
+          merge='7b935208beda436935ecaac05146ee0a6deebd0e'
+          assert git('rev-parse', I+'^{tree}') == git('rev-parse', U0+'^{tree}')
+          assert git('rev-parse', bridge+'^{tree}') == git('rev-parse', F+'^{tree}')
+          assert git('show','-s','--format=%P',bridge).split() == [F,U0]
+          assert git('show','-s','--format=%P',merge).split() == [bridge,U1]
+          assert git('rev-parse',merge+'^{tree}') == '58b4b3befe2ea9c2abaa6451424a5d7a0207d584'
+          assert git('merge-base','--all',bridge,U1) == U0
+          assert git('rev-list','--count',bridge+'..'+U1) == '18'
+          for parent in (F,U1):
+              subprocess.run(['git','merge-base','--is-ancestor',parent,'HEAD'],check=True)
+          fork_paths=set(git('diff','--name-only',I,F).splitlines())
+          upstream_paths=set(git('diff','--name-only',U0,U1).splitlines())
+          for path in sorted(fork_paths-upstream_paths):
+              assert git('ls-tree',F,'--',path) == git('ls-tree','HEAD','--',path), path
+          assert git('rev-parse','HEAD:.github/workflows/release.yml') == git('rev-parse',F+':.github/workflows/release.yml')
+          assert sorted(p.name for p in pathlib.Path('.github/workflows').glob('*.yml')) == ['release.yml']
+          guide=pathlib.Path('docs/knowledge-base/usage-guide.md').read_bytes()
+          for path in ('src/main/resources/docs/knowledge-base/usage-guide.md','skills/easy-yapi-assistant/docs/usage-guide.md'):
+              assert pathlib.Path(path).read_bytes()==guide,path
+          assert git('rev-parse','HEAD:skills/easy-yapi-assistant/rule-contexts.md') == git('rev-parse',U1+':skills/easy-yapi-assistant/rule-contexts.md')
+          subprocess.run(['git','diff','--check',F,'HEAD','--','.',':(exclude)skills/easy-yapi-assistant/rule-contexts.md'],check=True)
+          print('PASS: exact merge tree, original parents, 18 upstream commits, fork delta, release and doc parity')
+          print('Whitespace exception: byte-identical upstream generated rule-contexts.md retains Markdown hard breaks.')
+          PY
+          git diff --stat a386d3fb3aabd921934a645a5cc121c463bfb3c7 HEAD
 
-  baseline:
+  candidate:
     if: github.repository == 'XiaoDaoJiang/easy-yapi'
     strategy:
       fail-fast: false
@@ -64,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a386d3fb3aabd921934a645a5cc121c463bfb3c7
+          ref: ${{ env.CANDIDATE }}
           persist-credentials: false
       - uses: actions/setup-java@v4
         with:
@@ -73,22 +85,103 @@ jobs:
             17
             21
           cache: gradle
-      - name: Baseline tests and default plugin build
+      - name: Select native Gradle wrapper
         shell: pwsh
         run: |
-          if ($IsWindows) {
-            & .\gradlew.bat test buildPlugin --stacktrace
-          } else {
-            & ./gradlew test buildPlugin --stacktrace
-          }
+          $wrapper = if ($IsWindows) { '.\gradlew.bat' } else { './gradlew' }
+          "GRADLE_WRAPPER=$wrapper" >> $env:GITHUB_ENV
+          & $wrapper --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload baseline reports
+      - name: Sync all skill mirrors
+        id: sync
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & $env:GRADLE_WRAPPER syncSkill --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run fork and merge-boundary regressions
+        id: targeted
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & $env:GRADLE_WRAPPER test --tests '*OpenApiMultiDocument*' --tests '*OpenApiSemanticSchemaNamerTest' --tests '*OpenApiChannelRegistrationTest' --tests '*SyncListedApisActionTest' --tests '*ControllerApiManifestTest' --tests '*ListedApiEndpointResolverTest' --tests '*ApiScannerTest' --tests '*ExportOrchestratorTest' --tests '*ExportOrchestratorRuleFailureIntegrationTest' --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve targeted test reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: baseline-${{ matrix.os }}
+          name: targeted-${{ matrix.os }}
           path: |
             build/reports/tests/test/
             build/test-results/test/
           retention-days: 7
           if-no-files-found: warn
+      - name: Run full tests and build default plugin
+        id: full
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & $env:GRADLE_WRAPPER test buildPlugin --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve full test reports and default archive
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: full-${{ matrix.os }}
+          path: |
+            build/reports/tests/test/
+            build/test-results/test/
+            build/distributions/*.zip
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Build best-effort legacy IDEA package
+        id: compatibility
+        if: steps.full.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & $env:GRADLE_WRAPPER buildPlugin '-PpluginSinceBuild=221' '-PpluginUntilBuild=251' --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify repeated sync remains clean
+        id: parity
+        if: steps.sync.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & $env:GRADLE_WRAPPER syncSkill --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (git status --porcelain) { throw 'Candidate checkout is not clean after repeated sync' }
+      - name: Save generated diff
+        if: always()
+        shell: pwsh
+        run: |
+          git diff --binary --output=generated-sync.patch
+      - name: Upload validation details and packages
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-and-diff-${{ matrix.os }}
+          path: |
+            generated-sync.patch
+            build/distributions/*.zip
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Enforce required validation results
+        if: always()
+        shell: pwsh
+        env:
+          SYNC_RESULT: ${{ steps.sync.outcome }}
+          TARGETED_RESULT: ${{ steps.targeted.outcome }}
+          FULL_RESULT: ${{ steps.full.outcome }}
+          PARITY_RESULT: ${{ steps.parity.outcome }}
+          COMPAT_RESULT: ${{ steps.compatibility.outcome }}
+        run: |
+          Write-Host "Candidate=$env:CANDIDATE sync=$env:SYNC_RESULT targeted=$env:TARGETED_RESULT full=$env:FULL_RESULT parity=$env:PARITY_RESULT compatibility=$env:COMPAT_RESULT"
+          if ($env:COMPAT_RESULT -ne 'success') { Write-Host '::warning::Legacy IDEA packaging did not pass; compatibility remains best-effort.' }
+          foreach ($result in @($env:SYNC_RESULT, $env:TARGETED_RESULT, $env:FULL_RESULT, $env:PARITY_RESULT)) {
+            if ($result -ne 'success') { exit 1 }
+          }
