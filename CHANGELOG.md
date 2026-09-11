@@ -5,6 +5,27 @@ All notable changes to the EasyAPI plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.5] - 2026-09-11
+
+### Added
+- feat(ui): group sync actions in submenu
+- feat(sync): sync APIs from local changes
+- feat(sync): append changed APIs to manifest
+- feat(sync): Append local changes to sync list
+- feat(dashboard): preview and save binary responses (#1453)
+
+### Fixed
+- fix(scan): eliminate API scan hangs and reduce scan cost (#1450)
+- fix(dashboard): format XML and HTML request/response bodies (#1451)
+- fix(dashboard): refresh pristine snapshot after Reset to Default (#1449)
+- fix(dashboard): merge model body with cached edits so new DTO fields appear (#1448)
+
+### Improved
+- docs(privacy): redact local project identifiers
+- fix(sync): Keep appended API selectors usable
+
+---
+
 ## [3.2.4] - 2026-09-05
 
 ### Added
