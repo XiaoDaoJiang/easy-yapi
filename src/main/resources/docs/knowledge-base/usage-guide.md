@@ -72,7 +72,7 @@ EasyYapi can export API endpoints to YApi, Postman, Markdown, cURL, or IntelliJ 
 
 ## Sync Changed APIs
 
-Invoke **EasyYapi → Sync Changed APIs...** to inspect Java files in IDEA Local Changes, including unversioned files. EasyYapi selects the changed method when a method body, signature, annotation, or JavaDoc changes; a class-level declaration, annotation, or JavaDoc change selects the whole Controller; a new Controller also selects the whole class. The normal export dialog opens with the generated endpoints so you can review them and choose any enabled channel.
+Invoke **EasyYapi → Sync APIs → Sync Changed APIs...** to inspect Java files in IDEA Local Changes, including unversioned files. EasyYapi selects the changed method when a method body, signature, annotation, or JavaDoc changes; a class-level declaration, annotation, or JavaDoc change selects the whole Controller; a new Controller also selects the whole class. The normal export dialog opens with the generated endpoints so you can review them and choose any enabled channel.
 
 The initial implementation intentionally ignores non-Controller files, imports, fields, initializer blocks, inner classes, whitespace-only edits, and deleted source files. A deleted line inside a surviving method is accepted only when the previous method maps exactly to the current fully qualified class, method name, and parameter types. Unresolved changes are reported instead of guessed.
 
@@ -80,9 +80,9 @@ The initial implementation intentionally ignores non-Controller files, imports, 
 
 ## Append Local Changes to Sync List
 
-Invoke **EasyYapi → Append Local Changes to Sync List** to collect the same trusted Java-only Local Changes candidates used by Sync Changed APIs. EasyYapi appends missing selectors to `<project>/.easyapi/sync/sync-apis.txt`; it does not export APIs or open an export confirmation dialog.
+Invoke **EasyYapi → Sync APIs → Append Local Changes to Sync List** to collect the same trusted Java-only Local Changes candidates used by Sync Changed APIs. EasyYapi appends missing selectors to `<project>/.easyapi/sync/sync-apis.txt`; it does not export APIs or open an export confirmation dialog.
 
-Recommended workflow: **Append Local Changes → inspect/maintain the manifest → Sync Listed APIs**. After reviewing or maintaining the manifest, invoke **EasyYapi → Sync Listed APIs...** to open the normal export dialog.
+Recommended workflow: use **EasyYapi → Sync APIs → Append Local Changes to Sync List**, inspect/maintain the manifest, then use **EasyYapi → Sync APIs → Sync Listed APIs...**. Both actions are located in the **Sync APIs** submenu. After reviewing or maintaining the manifest, invoke **Sync Listed APIs...** to open the normal export dialog.
 
 ---
 
@@ -107,7 +107,7 @@ com.acme.user.UserController.*
 
 Use either `<fully qualified Controller>#<method>` or `<fully qualified Controller>.<method>`. If the method is overloaded, append `(<canonical parameter types>)`; EasyYapi reports ambiguous simple selectors instead of guessing. Use `#*` or `.*` to select every endpoint in a Controller. A whole Controller selector wins over method selectors for the same class. Blank lines and lines whose first non-space character is `#` are ignored.
 
-Invoke **EasyYapi → Sync Listed APIs...** or press **Alt+Shift+Y**. EasyYapi reads the file without modifying it, resolves the methods to current endpoints, and opens the normal export dialog so you can review endpoints and choose any enabled export channel.
+Invoke **EasyYapi → Sync APIs → Sync Listed APIs...** or press **Alt+Shift+Y**. EasyYapi reads the file without modifying it, resolves the methods to current endpoints, and opens the normal export dialog so you can review endpoints and choose any enabled export channel.
 
 ---
 
